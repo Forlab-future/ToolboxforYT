@@ -1704,37 +1704,120 @@ with tab_eis:
             st.divider()
             st.subheader("📈 EIS 플랏")
 
-            eis_plot_data_rem = []
+            # 원본 + Ohmic 제거 데이터 각각 수집
+            eis_plot_data_raw  = []   # 원본 Z'(a)_area
+            eis_plot_data_corr = []   # Ohmic 제거 Z'(a)(Ohmic x)_area
+            eis_plot_data_bode = []   # 보데용 (원본 주파수 기준)
+
             for uf in uploaded_files_rem:
                 uf.seek(0)
-                df_p, _, _ = parse_z_file(uf)
-                if df_p is not None:
-                    eis_plot_data_rem.append({"df": df_p, "name": os.path.splitext(uf.name)[0]})
+                df_corr, msg_c = process_correction_logic(uf, active_area_rem, area_num_rem)
+                if df_corr is not None:
+                    stem = os.path.splitext(uf.name)[0]
+                    # 원본 (Ohmic 포함)
+                    df_raw_plot = pd.DataFrame({
+                        "Freq(Hz)": df_corr["Freq(Hz)"],
+                        "Z'(a)":   df_corr["Z'(a)_area"],
+                        "Z''(b)": df_corr["Z''(b)_area"],
+                    })
+                    eis_plot_data_raw.append({"df": df_raw_plot.rename(columns={"Freq(Hz)":"Freq","Z'(a)":"Zr","Z''(b)":"Zi"}), "name": f"{stem} (원본)"})
+                    # Ohmic 제거
+                    df_corr_plot = pd.DataFrame({
+                        "Freq(Hz)": df_corr["Freq(Hz)"],
+                        "Z'(a)":   df_corr["Z'(a)(Ohmic x)_area"],
+                        "Z''(b)": df_corr["Z''(b)_area"],
+                    })
+                    eis_plot_data_corr.append({"df": df_corr_plot.rename(columns={"Freq(Hz)":"Freq","Z'(a)":"Zr","Z''(b)":"Zi"}), "name": f"{stem} (Ohmic 제거)"})
 
-            if eis_plot_data_rem:
-                col_ny2, col_bo2 = st.columns(2)
+            if eis_plot_data_raw:
+                with st.expander("⚙️ 나이키스트 축 범위", expanded=False):
+                    ny1, ny2, ny3, ny4 = st.columns(4)
+                    ny_xmin2 = ny1.number_input("X min (Z')", value=0.0, step=0.01, key="rem_ny_xmin")
+                    ny_xmax2 = ny2.number_input("X max (Z')", value=0.0, step=0.01, key="rem_ny_xmax")
+                    ny_ymin2 = ny3.number_input("Y min (-Z'')", value=0.0, step=0.01, key="rem_ny_ymin")
+                    ny_ymax2 = ny4.number_input("Y max (-Z'')", value=0.0, step=0.01, key="rem_ny_ymax")
 
-                with col_ny2:
-                    st.markdown("**🔵 나이키스트 플랏**")
-                    with st.expander("⚙️ 축 범위 설정", expanded=False):
-                        ny1, ny2 = st.columns(2)
-                        ny3, ny4 = st.columns(2)
-                        ny_xmin2 = ny1.number_input("X min (Z')", value=0.0, step=0.01, key="rem_ny_xmin")
-                        ny_xmax2 = ny2.number_input("X max (Z')", value=0.0, step=0.01, key="rem_ny_xmax")
-                        ny_ymin2 = ny3.number_input("Y min (-Z'')", value=0.0, step=0.01, key="rem_ny_ymin")
-                        ny_ymax2 = ny4.number_input("Y max (-Z'')", value=0.0, step=0.01, key="rem_ny_ymax")
-                    st.plotly_chart(make_nyquist(eis_plot_data_rem, ny_xmin2, ny_xmax2, ny_ymin2, ny_ymax2), use_container_width=True)
+                col_ny_raw, col_ny_corr = st.columns(2)
 
-                with col_bo2:
-                    st.markdown("**📊 보데 플랏**")
-                    with st.expander("⚙️ 축 범위 설정", expanded=False):
-                        bo1, bo2 = st.columns(2)
-                        bo3, bo4 = st.columns(2)
-                        bo_fmin2 = bo1.number_input("Freq min", value=0.1, step=0.1, key="rem_bo_fmin")
-                        bo_fmax2 = bo2.number_input("Freq max", value=100000.0, step=1000.0, key="rem_bo_fmax")
-                        bo_zmin2 = bo3.number_input("-Z'' min", value=0.0, step=0.01, key="rem_bo_zmin")
-                        bo_zmax2 = bo4.number_input("-Z'' max", value=0.0, step=0.01, key="rem_bo_zmax")
-                    st.plotly_chart(make_bode(eis_plot_data_rem, bo_fmin2, bo_fmax2, bo_zmin2, bo_zmax2), use_container_width=True)
+                def _nyquist_from_zr_zi(data_list, xmin, xmax, ymin, ymax):
+                    """Zr/Zi 컬럼 기반 나이키스트 플랏"""
+                    import plotly.graph_objects as _go
+                    colors = ["#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
+                              "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf"]
+                    fig = _go.Figure()
+                    for i, item in enumerate(data_list):
+                        df_i, name = item["df"], item["name"]
+                        fig.add_trace(_go.Scatter(
+                            x=df_i["Zr"], y=-df_i["Zi"],
+                            mode="lines+markers", name=name,
+                            line=dict(color=colors[i % len(colors)], width=2),
+                            marker=dict(size=4),
+                        ))
+                    fig.update_layout(
+                        xaxis=dict(title="Z' (Ω·cm²)",
+                                   range=[xmin, xmax] if xmin != xmax else None,
+                                   showgrid=True, gridcolor="#ebebeb",
+                                   zeroline=True, zerolinecolor="#333", zerolinewidth=2.5),
+                        yaxis=dict(title="-Z'' (Ω·cm²)",
+                                   range=[ymin, ymax] if ymin != ymax else None,
+                                   showgrid=True, gridcolor="#ebebeb",
+                                   zeroline=True, zerolinecolor="#333", zerolinewidth=2.5),
+                        plot_bgcolor="white", paper_bgcolor="white",
+                        height=380, margin=dict(l=55, r=10, t=30, b=50),
+                        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.85)", font=dict(size=10)),
+                    )
+                    return fig
+
+                with col_ny_raw:
+                    st.markdown("**🔵 나이키스트 — 원본 (Ohmic 포함)**")
+                    st.plotly_chart(
+                        _nyquist_from_zr_zi(eis_plot_data_raw, ny_xmin2, ny_xmax2, ny_ymin2, ny_ymax2),
+                        use_container_width=True
+                    )
+
+                with col_ny_corr:
+                    st.markdown("**🔴 나이키스트 — Ohmic 저항 제거**")
+                    st.plotly_chart(
+                        _nyquist_from_zr_zi(eis_plot_data_corr, ny_xmin2, ny_xmax2, ny_ymin2, ny_ymax2),
+                        use_container_width=True
+                    )
+
+                st.markdown("**📊 보데 플랏**")
+                with st.expander("⚙️ 보데 축 범위", expanded=False):
+                    bo1, bo2, bo3, bo4 = st.columns(4)
+                    bo_fmin2 = bo1.number_input("Freq min", value=0.1, step=0.1, key="rem_bo_fmin")
+                    bo_fmax2 = bo2.number_input("Freq max", value=100000.0, step=1000.0, key="rem_bo_fmax")
+                    bo_zmin2 = bo3.number_input("-Z'' min", value=0.0, step=0.01, key="rem_bo_zmin")
+                    bo_zmax2 = bo4.number_input("-Z'' max", value=0.0, step=0.01, key="rem_bo_zmax")
+
+                import plotly.graph_objects as _go2
+                colors_b = ["#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
+                            "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf"]
+                fig_b = _go2.Figure()
+                for i, item in enumerate(eis_plot_data_raw + eis_plot_data_corr):
+                    df_i, name = item["df"], item["name"]
+                    dash = "solid" if "원본" in name else "dash"
+                    fig_b.add_trace(_go2.Scatter(
+                        x=df_i["Freq"], y=-df_i["Zi"],
+                        mode="lines+markers", name=name,
+                        line=dict(color=colors_b[i % len(colors_b)], width=2, dash=dash),
+                        marker=dict(size=4),
+                    ))
+                log_range = [np.log10(max(bo_fmin2, 1e-9)), np.log10(max(bo_fmax2, 1e-9))]
+                fig_b.update_layout(
+                    xaxis=dict(title="Frequency (Hz)", type="log", range=log_range,
+                               showgrid=True, gridcolor="#ebebeb",
+                               zeroline=True, zerolinecolor="#333", zerolinewidth=2.5),
+                    yaxis=dict(title="-Z'' (Ω·cm²)",
+                               range=[bo_zmin2, bo_zmax2] if bo_zmin2 != bo_zmax2 else None,
+                               showgrid=True, gridcolor="#ebebeb",
+                               zeroline=True, zerolinecolor="#333", zerolinewidth=2.5),
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    height=380, margin=dict(l=55, r=10, t=30, b=50),
+                    legend=dict(x=0.99, y=0.99, xanchor="right",
+                                bgcolor="rgba(255,255,255,0.85)", font=dict(size=10)),
+                )
+                st.plotly_chart(fig_b, use_container_width=True)
 
 with tab_eis:
     with eis_sub_fit:
