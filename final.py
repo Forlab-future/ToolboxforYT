@@ -831,7 +831,7 @@ def render_settings(key_prefix: str):
             st.caption("📉 다운샘플링 배율")
             downsample = st.number_input(
                 "N배 다운샘플링",
-                min_value=1, max_value=1000, value=60, step=1,
+                min_value=1, max_value=1000, value=5, step=1,
                 key=f"{key_prefix}_downsample",
                 help="1=전체, 60=60배 축약"
             )
