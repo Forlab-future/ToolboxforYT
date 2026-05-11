@@ -963,10 +963,12 @@ with tab_longterm:
                             fig.update_layout(
                                 xaxis=dict(title=time_col_ind, range=[x_min, x_max]),
                                 yaxis=dict(title="Voltage (V)", range=[y_min, y_max]),
-                                height=450, margin=dict(l=20, r=20, t=20, b=20),
+                                height=600, width=720, margin=dict(l=20, r=20, t=20, b=20),
                                 legend=dict(orientation="h", y=-0.15),
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            _, center_col, _ = st.columns([1, 6, 1])
+                            with center_col:
+                                st.plotly_chart(fig, use_container_width=False)
 
                             st.divider()
                             st.subheader("📋 데이터 테이블")
@@ -1062,10 +1064,12 @@ with tab_longterm:
                     fig_all.update_layout(
                         xaxis=dict(title=time_col_ov, range=[x_min, x_max]),
                         yaxis=dict(title="Voltage (V)", range=[y_min, y_max]),
-                        height=500, margin=dict(l=20, r=20, t=20, b=20),
+                        height=600, width=720, margin=dict(l=20, r=20, t=20, b=20),
                         legend=dict(orientation="h", y=-0.15),
                     )
-                    st.plotly_chart(fig_all, use_container_width=True)
+                    _, center_col_all, _ = st.columns([1, 6, 1])
+                    with center_col_all:
+                        st.plotly_chart(fig_all, use_container_width=False)
 
                     st.divider()
                     st.subheader("📉 파일별 전압 기울기 분석")
@@ -1119,10 +1123,12 @@ with tab_longterm:
                             fig_ind.update_layout(
                                 xaxis=dict(title=time_col_ov, range=[ex_min, ex_max]),
                                 yaxis=dict(title="Voltage (V)", range=[ey_min, ey_max]),
-                                height=380, margin=dict(l=20, r=20, t=20, b=20),
+                                height=600, width=720, margin=dict(l=20, r=20, t=20, b=20),
                                 legend=dict(orientation="h", y=-0.15),
                             )
-                            st.plotly_chart(fig_ind, use_container_width=True)
+                            _, center_col_ind, _ = st.columns([1, 6, 1])
+                            with center_col_ind:
+                                st.plotly_chart(fig_ind, use_container_width=False)
 
                     st.divider()
                     filenames = list(parsed_ov.keys())
@@ -1284,10 +1290,12 @@ with tab_longterm:
                     fig.update_layout(
                         xaxis=dict(title=time_col_ct, range=[x_min, x_max]),
                         yaxis=dict(title="Voltage (V)", range=[y_min, y_max]),
-                        height=550, margin=dict(l=20, r=20, t=20, b=20),
+                        height=600, width=720, margin=dict(l=20, r=20, t=20, b=20),
                         legend=dict(orientation="h", y=-0.15),
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    _, center_col_ct, _ = st.columns([1, 6, 1])
+                    with center_col_ct:
+                        st.plotly_chart(fig, use_container_width=False)
 
                     st.divider()
                     st.subheader("📋 데이터 테이블")
