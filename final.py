@@ -7,6 +7,10 @@ import io
 import os
 import zipfile
 from datetime import datetime, date as _date
+from scipy.optimize import (
+    least_squares, differential_evolution,
+    minimize, dual_annealing, shgo,
+)
 
 st.set_page_config(page_title="Yoon Team 전용 전기화학 데이터 정리", layout="wide")
 st.title("📊 Yoon Team 전용 전기화학 데이터 정리")
@@ -20,6 +24,526 @@ COLORS = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
 ]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EIS 피팅 탭 함수
+# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# 숫자 포맷 (소수점 5자리 미만이면 전체 표시, 이상이면 과학적 표기)
+# ══════════════════════════════════════════════════════════════════════════════
+def fmt_val(v):
+    """5자리 이하 소수점은 그대로, 이상은 과학적 표기"""
+    if v == 0:
+        return "0"
+    abs_v = abs(v)
+    if abs_v >= 1e-4:
+        # 소수점 몇 자리 필요한지 확인
+        formatted = f"{v:.10f}".rstrip("0").rstrip(".")
+        return formatted
+    else:
+        return f"{v:.6e}"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 파서
+# ══════════════════════════════════════════════════════════════════════════════
+def parse_z_file_fit(uploaded_file):
+    content = uploaded_file.getvalue().decode("utf-8", errors="ignore").splitlines()
+    data_start = None
+    for idx, line in enumerate(content):
+        if "End Comments" in line:
+            data_start = idx + 1
+            break
+    if data_start is None:
+        return None
+    rows = []
+    for line in content[data_start:]:
+        parts = re.split(r'\s+', line.strip())
+        if len(parts) >= 6:
+            try:
+                rows.append((float(parts[0]), float(parts[4]), float(parts[5])))
+            except ValueError:
+                continue
+    if not rows:
+        return None
+    return pd.DataFrame(rows, columns=["Freq", "Zr", "Zi"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 회로 모델: L — Rs — (R1‖CPE1) — ... — (Rn‖CPEn)
+# ══════════════════════════════════════════════════════════════════════════════
+def z_cpe(omega, Q, n):
+    return 1.0 / (Q * (1j * omega) ** n)
+
+def z_parallel_cpe(R, Q, n, omega):
+    zc = z_cpe(omega, Q, n)
+    return (R * zc) / (R + zc)
+
+def circuit_impedance(freq, params, num_rc):
+    omega = 2 * np.pi * np.array(freq, dtype=float)
+    Z = 1j * omega * params[0] + params[1]
+    for i in range(num_rc):
+        b = 2 + i * 3
+        Z += z_parallel_cpe(params[b], params[b+1], params[b+2], omega)
+    return Z
+
+def residuals_fn(params, freq, zr, zi, num_rc):
+    try:
+        Z = circuit_impedance(freq, params, num_rc)
+        w = 1.0 / (zr**2 + zi**2 + 1e-12)
+        return np.concatenate([(Z.real - zr)*np.sqrt(w), (Z.imag - zi)*np.sqrt(w)])
+    except Exception:
+        return np.ones(2 * len(freq)) * 1e10
+
+def chi2_fn(params, freq, zr, zi, num_rc):
+    return float(np.sum(residuals_fn(params, freq, zr, zi, num_rc)**2))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 알고리즘 정의
+# ══════════════════════════════════════════════════════════════════════════════
+ALGORITHMS = {
+    "TRF": {
+        "label": "🚀 TRF (Trust Region Reflective)",
+        "desc":  "빠른 로컬 최적화. 초기값이 좋을 때 효과적. 가장 일반적인 선택.",
+        "scope": "local",
+    },
+    "LM": {
+        "label": "⚡ Levenberg-Marquardt",
+        "desc":  "경계 조건 없는 빠른 로컬 최적화. 잡음이 적은 데이터에 강함.",
+        "scope": "local",
+    },
+    "Nelder-Mead": {
+        "label": "🔺 Nelder-Mead (Simplex)",
+        "desc":  "기울기 불필요. 노이즈에 강하나 느림. 비정형 목적함수에 유용.",
+        "scope": "local",
+    },
+    "L-BFGS-B": {
+        "label": "📐 L-BFGS-B",
+        "desc":  "경계 조건 지원 준뉴턴법. 파라미터 많을 때 효율적.",
+        "scope": "local",
+    },
+    "DE": {
+        "label": "🌐 Differential Evolution",
+        "desc":  "진화 알고리즘 기반 전역 최적화. 초기값 무관, 느림.",
+        "scope": "global",
+    },
+    "DA": {
+        "label": "🌡️ Dual Annealing",
+        "desc":  "모의 담금질 + 로컬 탐색 결합. 깊은 전역 최솟값 탐색.",
+        "scope": "global",
+    },
+    "SHGO": {
+        "label": "🔬 SHGO (Simplicial Homology)",
+        "desc":  "위상수학 기반 전역 최적화. 다봉 함수에 강함.",
+        "scope": "global",
+    },
+    "DE+TRF": {
+        "label": "🏆 DE → TRF (전역 후 정밀)",
+        "desc":  "전역(DE)으로 초기값 탐색 후 TRF로 정밀 수렴. 가장 정확.",
+        "scope": "hybrid",
+    },
+    "DA+TRF": {
+        "label": "🏆 DA → 시TRF (어닐링 후 정밀)",
+        "desc":  "이중 어닐링으로 초기값 탐색 후 TRF로 정밀 수렴.",
+        "scope": "hybrid",
+    },
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 플랏
+# ══════════════════════════════════════════════════════════════════════════════
+def plot_nyquist(df, Z_fit=None, xmin=0.0, xmax=0.0, ymin=0.0, ymax=0.0):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["Zr"], y=-df["Zi"], mode="markers", name="측정값",
+        marker=dict(color="#4361ee", size=6, opacity=0.85),
+    ))
+    if Z_fit is not None:
+        fig.add_trace(go.Scatter(
+            x=Z_fit.real, y=-Z_fit.imag, mode="lines", name="피팅",
+            line=dict(color="#e63946", width=2.5),
+        ))
+    fig.update_layout(
+        title=dict(text="나이키스트 플랏", font=dict(size=13, color="#1a1a2e"), x=0.02),
+        xaxis=dict(title="Z' (Ω)", range=[xmin, xmax] if xmin != xmax else None,
+                   showgrid=True, gridcolor="#ebebeb",
+                   zeroline=True, zerolinecolor="#333", zerolinewidth=2.5),
+        yaxis=dict(title="-Z'' (Ω)", range=[ymin, ymax] if ymin != ymax else None,
+                   showgrid=True, gridcolor="#ebebeb",
+                   zeroline=True, zerolinecolor="#333", zerolinewidth=2.5),
+        plot_bgcolor="white", paper_bgcolor="white",
+        height=360, margin=dict(l=55, r=10, t=40, b=50),
+        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.85)", font=dict(size=11)),
+    )
+    return fig
+
+def plot_bode(df, Z_fit=None, fmin=0.1, fmax=100000.0, ymin=0.0, ymax=0.0):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["Freq"], y=-df["Zi"], mode="markers", name="측정값",
+        marker=dict(color="#4361ee", size=6, opacity=0.85),
+    ))
+    if Z_fit is not None:
+        fig.add_trace(go.Scatter(
+            x=df["Freq"], y=-Z_fit.imag, mode="lines", name="피팅",
+            line=dict(color="#e63946", width=2.5),
+        ))
+    fig.update_layout(
+        title=dict(text="보데 플랏", font=dict(size=13, color="#1a1a2e"), x=0.02),
+        xaxis=dict(title="Frequency (Hz)", type="log",
+                   range=[np.log10(max(fmin, 1e-9)), np.log10(max(fmax, 1e-9))],
+                   showgrid=True, gridcolor="#ebebeb",
+                   zeroline=True, zerolinecolor="#333", zerolinewidth=2.5),
+        yaxis=dict(title="-Z'' (Ω)", range=[ymin, ymax] if ymin != ymax else None,
+                   showgrid=True, gridcolor="#ebebeb",
+                   zeroline=True, zerolinecolor="#333", zerolinewidth=2.5),
+        plot_bgcolor="white", paper_bgcolor="white",
+        height=360, margin=dict(l=55, r=10, t=40, b=50),
+        legend=dict(x=0.99, y=0.99, xanchor="right",
+                    bgcolor="rgba(255,255,255,0.85)", font=dict(size=11)),
+    )
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 피팅 실행 함수
+# ══════════════════════════════════════════════════════════════════════════════
+def run_fitting(algo_key, p0, lo_b, hi_b, freq_arr, zr_arr, zi_arr, num_rc):
+    bounds_pairs = list(zip(lo_b, hi_b))
+
+    def _trf(x0):
+        r = least_squares(residuals_fn, x0=x0, bounds=(lo_b, hi_b),
+                          args=(freq_arr, zr_arr, zi_arr, num_rc),
+                          method="trf", max_nfev=50000,
+                          ftol=1e-12, xtol=1e-12, gtol=1e-12)
+        return r.x
+
+    def _lm(x0):
+        r = least_squares(residuals_fn, x0=x0,
+                          args=(freq_arr, zr_arr, zi_arr, num_rc),
+                          method="lm", max_nfev=50000,
+                          ftol=1e-12, xtol=1e-12, gtol=1e-12)
+        return r.x
+
+    def _nelder(x0):
+        r = minimize(chi2_fn, x0=x0,
+                     args=(freq_arr, zr_arr, zi_arr, num_rc),
+                     method="Nelder-Mead",
+                     options={"maxiter": 100000, "xatol": 1e-10, "fatol": 1e-10})
+        return r.x
+
+    def _lbfgsb(x0):
+        r = minimize(chi2_fn, x0=x0, bounds=bounds_pairs,
+                     args=(freq_arr, zr_arr, zi_arr, num_rc),
+                     method="L-BFGS-B",
+                     options={"maxiter": 50000, "ftol": 1e-15, "gtol": 1e-10})
+        return r.x
+
+    def _de():
+        r = differential_evolution(chi2_fn, bounds=bounds_pairs,
+                                   args=(freq_arr, zr_arr, zi_arr, num_rc),
+                                   maxiter=800, tol=1e-10, seed=42,
+                                   workers=1, polish=True)
+        return r.x
+
+    def _da():
+        r = dual_annealing(chi2_fn, bounds=bounds_pairs,
+                           args=(freq_arr, zr_arr, zi_arr, num_rc),
+                           maxiter=3000, seed=42,
+                           minimizer_kwargs={"method": "L-BFGS-B",
+                                             "bounds": bounds_pairs})
+        return r.x
+
+    def _shgo():
+        r = shgo(chi2_fn, bounds=bounds_pairs,
+                 args=(freq_arr, zr_arr, zi_arr, num_rc),
+                 n=200, iters=3,
+                 minimizer_kwargs={"method": "L-BFGS-B"})
+        return r.x
+
+    if algo_key == "TRF":
+        return _trf(p0)
+    elif algo_key == "LM":
+        return _lm(p0)
+    elif algo_key == "Nelder-Mead":
+        return _nelder(p0)
+    elif algo_key == "L-BFGS-B":
+        return _lbfgsb(p0)
+    elif algo_key == "DE":
+        return _de()
+    elif algo_key == "DA":
+        return _da()
+    elif algo_key == "SHGO":
+        return _shgo()
+    elif algo_key == "DE+TRF":
+        x_de = _de()
+        return _trf(x_de)
+    elif algo_key == "DA+TRF":
+        x_da = _da()
+        return _trf(x_da)
+    else:
+        return _trf(p0)
+
+
+def eis_fitting_tab():
+    # ══════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
+
+    uploaded_fit = st.file_uploader("📂 임피던스 파일 (.z / .txt)", type=["z", "txt"], key="eis_fit_uploader")
+
+    if uploaded_fit is None:
+        st.info("👆 .z 또는 .txt 파일을 업로드하면 시작됩니다.")
+        return
+
+    df = parse_z_file_fit(uploaded_fit)
+    if df is None:
+        st.error("❌ 파싱 실패. 파일 형식을 확인해 주세요.")
+        return
+
+    st.markdown(
+        f'<span class="badge-ok">✅ {len(df)}개 포인트 | '
+        f'{df["Freq"].min():.2g} ~ {df["Freq"].max():.2g} Hz</span>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(" ")
+
+    col_L, col_R = st.columns([6, 4], gap="medium")
+
+    # ── 왼쪽: 그래프 ──────────────────────────────────────────────────────────────
+    with col_L:
+        Z_fit_full = st.session_state.get("fit_Z_fit_full", None)
+
+        with st.expander("⚙️ 나이키스트 축 범위", expanded=False):
+            a1, a2, a3, a4 = st.columns(4)
+            ny_xmin = a1.number_input("X min", value=0.0, format="%.4f", key="fit_ny_xmin")
+            ny_xmax = a2.number_input("X max", value=0.0, format="%.4f", key="fit_ny_xmax")
+            ny_ymin = a3.number_input("Y min", value=0.0, format="%.4f", key="fit_ny_ymin")
+            ny_ymax = a4.number_input("Y max", value=0.0, format="%.4f", key="fit_ny_ymax")
+        st.plotly_chart(plot_nyquist(df, Z_fit_full, ny_xmin, ny_xmax, ny_ymin, ny_ymax),
+                        use_container_width=True)
+
+        with st.expander("⚙️ 보데 축 범위", expanded=False):
+            b1, b2, b3, b4 = st.columns(4)
+            bo_fmin = b1.number_input("Freq min", value=0.1,      format="%.4g", key="fit_bo_fmin")
+            bo_fmax = b2.number_input("Freq max", value=100000.0, format="%.4g", key="fit_bo_fmax")
+            bo_ymin = b3.number_input("Y min",    value=0.0,      format="%.4f", key="fit_bo_ymin")
+            bo_ymax = b4.number_input("Y max",    value=0.0,      format="%.4f", key="fit_bo_ymax")
+        st.plotly_chart(plot_bode(df, Z_fit_full, bo_fmin, bo_fmax, bo_ymin, bo_ymax),
+                        use_container_width=True)
+
+    # ── 오른쪽: 컨트롤 ────────────────────────────────────────────────────────────
+    with col_R:
+
+        # ── 회로 구성 ────────────────────────────────────────────────────────────
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### ⚡ 회로 구성")
+        num_rc = st.slider("R+CPE 병렬 조합 개수", 1, 5, 3, key="fit_num_rc")
+        circuit_str = "L — Rs — " + " — ".join([f"(R{i}‖CPE{i})" for i in range(1, num_rc+1)])
+        st.markdown(f'<div class="circuit-box">{circuit_str}</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── 주파수 범위 ──────────────────────────────────────────────────────────
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### 📡 피팅 주파수 범위")
+        fc1, fc2 = st.columns(2)
+        f_lo = fc1.number_input("최소 (Hz)", value=float(df["Freq"].min()), format="%.4g", key="fit_fit_flo")
+        f_hi = fc2.number_input("최대 (Hz)", value=float(df["Freq"].max()), format="%.4g", key="fit_fit_fhi")
+        df_fit = df[(df["Freq"] >= f_lo) & (df["Freq"] <= f_hi)].reset_index(drop=True)
+        st.caption(f"사용 포인트: **{len(df_fit)}개**")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── 알고리즘 선택 + 피팅 실행 ────────────────────────────────────────────
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### ▶ 피팅 알고리즘")
+
+        scope_map = {"로컬 최적화": "local", "전역 최적화": "global", "하이브리드": "hybrid"}
+        scope_sel = st.radio("종류", list(scope_map.keys()), horizontal=True, key="fit_algo_scope")
+        scope_val = scope_map[scope_sel]
+
+        filtered_algos = {k: v for k, v in ALGORITHMS.items() if v["scope"] == scope_val}
+        algo_labels = [v["label"] for v in filtered_algos.values()]
+        algo_keys   = list(filtered_algos.keys())
+
+        sel_algo_label = st.selectbox("알고리즘", algo_labels, key="fit_algo_sel")
+        sel_algo_key   = algo_keys[algo_labels.index(sel_algo_label)]
+
+        st.markdown(
+            f'<p class="algo-desc">ℹ️ {ALGORITHMS[sel_algo_key]["desc"]}</p>',
+            unsafe_allow_html=True,
+        )
+
+        auto_init = st.checkbox("🤖 자동 초기값 추정", value=True, key="fit_auto_init",
+                                help="고주파 Z' → Rs, 저주파 Z' 차이 → R 총합 자동 추정")
+
+        rb_col, sp_col = st.columns([2, 3])
+        with rb_col:
+            run_btn = st.button("▶ 피팅 실행", type="primary", key="fit_run_fit")
+
+        status_placeholder = sp_col.empty()
+
+        # ── 결과 (파라미터 위에 표시) ───────────────────────────────────────────────
+        st.markdown('</div>', unsafe_allow_html=True)
+        if "fit_popt" in st.session_state:
+            popt = st.session_state["fit_popt"]
+            res_labels = st.session_state.get("fit_res_labels", [])
+
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown("### 📊 피팅 결과")
+            st.caption(f"알고리즘: {st.session_state.get('fit_fit_algo','')}")
+
+            m1, m2 = st.columns(2)
+            m1.metric("Chi²",      f"{st.session_state['fit_chi2']:.3e}")
+            m2.metric("Chi² 환원", f"{st.session_state['fit_chi2_red']:.3e}")
+            st.markdown(" ")
+
+            for (sym, name, unit), val in zip(res_labels, popt):
+                label = f"<b>{sym}</b>" + (f" ({unit})" if unit else "")
+                st.markdown(
+                    f'<div class="result-row">'
+                    f'<span>{label} &nbsp; {name}</span>'
+                    f'<span class="result-val">{fmt_val(val)}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            fn = st.session_state.get("fit_fit_filename", "result").replace(".z", "")
+
+            buf = io.StringIO()
+            buf.write(f"파일명,{fn}\n")
+            buf.write("\n")
+            buf.write("=== 피팅 파라미터 ===\n")
+            buf.write("심볼,이름,단위,피팅값\n")
+            for (sym, name, unit), val in zip(res_labels, popt):
+                buf.write(f"{sym},{name},{unit},{fmt_val(val)}\n")
+            buf.write("\n")
+            buf.write("=== 임피던스 데이터 (측정값 & 피팅값) ===\n")
+            buf.write("Freq(Hz),실수부Z'_측정,허수부Z\"_측정,실수부Z'_피팅,허수부Z\"_피팅,neg허수부Z\"_측정,neg허수부Z\"_피팅\n")
+            Z_fit_csv = st.session_state["fit_Z_fit_full"]
+            for i, row in df.iterrows():
+                freq_v = row["Freq"]
+                zr_m = row["Zr"]
+                zi_m = row["Zi"]
+                zr_f = float(Z_fit_csv.real[i])
+                zi_f = float(Z_fit_csv.imag[i])
+                buf.write(
+                    f"{fmt_val(freq_v)},{fmt_val(zr_m)},{fmt_val(zi_m)},"
+                    f"{fmt_val(zr_f)},{fmt_val(zi_f)},"
+                    f"{fmt_val(-zi_m)},{fmt_val(-zi_f)}\n"
+                )
+            st.markdown(" ")
+            st.download_button("⬇️ 결과 CSV (파라미터 + 임피던스 데이터)",
+                               data=buf.getvalue().encode("utf-8-sig"),
+                               file_name=f"EIS_fit_{fn}.csv", mime="text/csv")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── 파라미터 입력 ─────────────────────────────────────────────────────────
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### 🔧 파라미터 설정")
+
+        hc0, hc1, hc2, hc3 = st.columns([1.5, 1, 1, 1])
+        for hc, txt in zip([hc1, hc2, hc3], ["초기값", "하한", "상한"]):
+            hc.markdown(f'<p style="font-size:0.70rem;color:#aaa;text-align:center;margin:0">{txt}</p>',
+                        unsafe_allow_html=True)
+
+        p0, lo_b, hi_b = [], [], []
+
+        st.markdown('<p class="group-title">인덕턴스 &amp; 직렬 저항</p>', unsafe_allow_html=True)
+        for sym, name, unit, default, lo, hi in [
+            ("L",  "인덕턴스",  "H", 1e-7, 1e-12, 1e-3),
+            ("Rs", "직렬 저항", "Ω", 0.30, 1e-4,  10.0),
+        ]:
+            tag = f"{sym} [{unit}]"
+            st.markdown(f'<p class="param-label">{tag} — {name}</p>', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns(3)
+            v0  = c1.number_input("v", value=default, format="%.2e", key=f"p0_{sym}", label_visibility="collapsed")
+            vlo = c2.number_input("l", value=lo,      format="%.2e", key=f"lo_{sym}", label_visibility="collapsed")
+            vhi = c3.number_input("h", value=hi,      format="%.2e", key=f"hi_{sym}", label_visibility="collapsed")
+            p0.append(v0); lo_b.append(vlo); hi_b.append(vhi)
+
+        R_defs = [0.02, 0.10, 0.30, 0.50, 1.00]
+        Q_defs = [1e-3, 5e-3, 1e-2, 2e-2, 5e-2]
+        n_defs = [0.80, 0.75, 0.60, 0.65, 0.70]
+
+        for i in range(1, num_rc + 1):
+            st.markdown(f'<hr><p class="group-title">아크 {i} — R{i}‖CPE{i}</p>', unsafe_allow_html=True)
+            for sym, name, unit, default, lo, hi in [
+                (f"R{i}", f"저항 {i}",      "Ω",    R_defs[i-1], 1e-4, 100.0),
+                (f"Q{i}", f"CPE{i} 계수",   "S·sⁿ", Q_defs[i-1], 1e-9, 10.0 ),
+                (f"n{i}", f"CPE{i} 지수",   "",     n_defs[i-1], 0.01, 1.00 ),
+            ]:
+                tag = f"{sym} [{unit}]" if unit else sym
+                st.markdown(f'<p class="param-label">{tag} — {name}</p>', unsafe_allow_html=True)
+                c1, c2, c3 = st.columns(3)
+                v0  = c1.number_input("v", value=default, format="%.2e", key=f"p0_{sym}", label_visibility="collapsed")
+                vlo = c2.number_input("l", value=lo,      format="%.2e", key=f"lo_{sym}", label_visibility="collapsed")
+                vhi = c3.number_input("h", value=hi,      format="%.2e", key=f"hi_{sym}", label_visibility="collapsed")
+                p0.append(v0); lo_b.append(vlo); hi_b.append(vhi)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        if run_btn:
+            status_placeholder.markdown(
+                f'<p style="color:#555;font-size:0.85rem;margin-top:8px">'
+                f'⏳ {sel_algo_label} 최적화 진행 중...</p>',
+                unsafe_allow_html=True
+            )
+
+            freq_arr = df_fit["Freq"].values
+            zr_arr   = df_fit["Zr"].values
+            zi_arr   = df_fit["Zi"].values
+            n_params = 2 + num_rc * 3
+
+            if len(freq_arr) < n_params:
+                st.error(f"데이터 포인트({len(freq_arr)})가 파라미터 수({n_params})보다 적습니다.")
+            else:
+                if auto_init:
+                    rs_est  = float(zr_arr[np.argmax(freq_arr)])
+                    re_est  = float(zr_arr[np.argmin(freq_arr)])
+                    r_total = max(re_est - rs_est, 0.01)
+                    p0[1]   = rs_est
+                    ws = [0.10, 0.25, 0.40, 0.15, 0.10][:num_rc]
+                    s  = sum(ws)
+                    for i in range(num_rc):
+                        p0[2 + i*3] = r_total * ws[i] / s
+
+                # LM은 경계 조건 불가 → 초기값 클리핑만
+                if sel_algo_key == "LM":
+                    p0 = [max(lo, min(hi, v)) for v, lo, hi in zip(p0, lo_b, hi_b)]
+
+                try:
+                        popt = run_fitting(sel_algo_key, p0, lo_b, hi_b,
+                                           freq_arr, zr_arr, zi_arr, num_rc)
+
+                        Z_fit_full = circuit_impedance(df["Freq"].values, popt, num_rc)
+                        chi2     = chi2_fn(popt, freq_arr, zr_arr, zi_arr, num_rc)
+                        chi2_red = chi2 / max(1, 2*len(freq_arr) - n_params)
+
+                        res_labels = [("L","인덕턴스","H"), ("Rs","직렬 저항","Ω")]
+                        for i in range(1, num_rc+1):
+                            res_labels += [
+                                (f"R{i}", f"저항 {i}",    "Ω"),
+                                (f"Q{i}", f"CPE{i} 계수", "S·sⁿ"),
+                                (f"n{i}", f"CPE{i} 지수", ""),
+                            ]
+
+                        st.session_state.update({
+                            "fit_popt": popt, "fit_Z_fit_full": Z_fit_full,
+                            "fit_chi2": chi2, "fit_chi2_red": chi2_red,
+                            "fit_res_labels": res_labels,
+                            "fit_fit_algo": sel_algo_label,
+                            "fit_fit_filename": uploaded_fit.name,
+                        })
+                        status_placeholder.empty()
+                        st.rerun()
+
+                except Exception as e:
+                        status_placeholder.empty()
+                        st.error(f"❌ 피팅 실패: {e}")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ── 공통 파서 (장기 데이터용) ──────────────────────────────────────────────────
 def parse_idf(file_bytes: bytes) -> pd.DataFrame | None:
@@ -998,7 +1522,7 @@ def process_correction_logic(uploaded_file, active_area, area_num):
 
 # ── EIS 탭 본문 ────────────────────────────────────────────────────────────────
 with tab_eis:
-    eis_sub_calc, eis_sub_rem = st.tabs(["🧪 Ohmic·Rp 계산기", "⚡ 옴믹 저항 제거기"])
+    eis_sub_calc, eis_sub_rem, eis_sub_fit = st.tabs(["🧪 Ohmic·Rp 계산기", "⚡ 옴믹 저항 제거기", "📈 임피던스 피팅"])
 
     # ── 계산기 ─────────────────────────────────────────────────────────────────
     with eis_sub_calc:
@@ -1212,3 +1736,8 @@ with tab_eis:
                         bo_zmax2 = bo4.number_input("-Z'' max", value=0.0, step=0.01, key="rem_bo_zmax")
                     st.plotly_chart(make_bode(eis_plot_data_rem, bo_fmin2, bo_fmax2, bo_zmin2, bo_zmax2), use_container_width=True)
 
+with tab_eis:
+    with eis_sub_fit:
+        st.subheader("📈 EIS 임피던스 피팅")
+        st.caption("회로 모델: L — Rs — (R1‖CPE1) — ... — (Rn‖CPEn)")
+        eis_fitting_tab()
