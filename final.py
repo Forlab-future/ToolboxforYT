@@ -398,20 +398,81 @@ def eis_fitting_tab():
             m2.metric("Chi² 환원", f"{st.session_state['fit_chi2_red']:.3e}")
             st.markdown(" ")
 
+            # ── 결과 테이블 ──────────────────────────────────────────────────
+            def _fmt(v):
+                """소수점 5자리 미만 → 지수 표기, 이상 → 전체 소수점"""
+                if v == 0:
+                    return "0"
+                abs_v = abs(v)
+                if abs_v < 1e-4:
+                    return f"{v:.6e}"
+                else:
+                    # 소수점 10자리까지 확인 후 trailing zero 제거
+                    return f"{v:.10f}".rstrip("0").rstrip(".")
+
+            # 그룹별로 나눠서 테이블 표시
+            groups = []
+            cur_group = []
             for (sym, name, unit), val in zip(res_labels, popt):
-                label = f"<b>{sym}</b>" + (f" ({unit})" if unit else "")
+                if sym in ("L", "Rs"):
+                    cur_group.append((sym, name, unit, val))
+                elif sym.startswith("R") and not sym.startswith("Rs"):
+                    if cur_group:
+                        groups.append(cur_group)
+                    cur_group = [(sym, name, unit, val)]
+                else:
+                    cur_group.append((sym, name, unit, val))
+            if cur_group:
+                groups.append(cur_group)
+
+            # L, Rs 먼저 메트릭으로
+            base_items = [(s,n,u,v) for (s,n,u,v) in groups[0] if s in ("L","Rs")] if groups else []
+            arc_groups = [g for g in groups if not all(s in ("L","Rs") for (s,n,u,v) in g)]
+
+            def _fmt_display(sym, v):
+                """UI 표시용: L은 전체, 나머지는 소수점 4자리"""
+                if sym == "L":
+                    return _fmt(v)
+                if abs(v) < 1e-4:
+                    return f"{v:.6e}"
+                return f"{v:.4f}"
+
+            if base_items:
+                b_cols = st.columns(len(base_items))
+                for col, (sym, name, unit, val) in zip(b_cols, base_items):
+                    tag = f"{sym} ({unit})" if unit else sym
+                    col.metric(tag, _fmt_display(sym, val))
+                st.markdown(" ")
+
+            # 아크별 테이블
+            for g in arc_groups:
+                arc_num = g[0][0][1:]  # R1 → "1"
                 st.markdown(
-                    f'<div class="result-row">'
-                    f'<span>{label} &nbsp; {name}</span>'
-                    f'<span class="result-val">{fmt_val(val)}</span>'
-                    f'</div>',
-                    unsafe_allow_html=True,
+                    f'<p style="font-size:0.75rem;font-weight:700;color:#4361ee;'
+                    f'margin:8px 0 2px;">아크 {arc_num}</p>',
+                    unsafe_allow_html=True
+                )
+                tbl_data = {
+                    "파라미터": [f"{s} ({u})" if u else s for (s,n,u,v) in g],
+                    "이름":     [n for (s,n,u,v) in g],
+                    "피팅값":   [_fmt_display(s, v) for (s,n,u,v) in g],
+                }
+                st.dataframe(
+                    pd.DataFrame(tbl_data),
+                    use_container_width=True,
+                    hide_index=True,
                 )
 
             fn = st.session_state.get("fit_fit_filename", "result").replace(".z", "")
 
+            # 회로 문자열 생성
+            num_rc_saved = (len(popt) - 2) // 3
+            circuit_str = "L — Rs — " + " — ".join([f"(R{i}|CPE{i})" for i in range(1, num_rc_saved + 1)])
+
             buf = io.StringIO()
             buf.write(f"파일명,{fn}\n")
+            buf.write(f"회로 모델,{circuit_str}\n")
+            buf.write(f"알고리즘,{st.session_state.get('fit_fit_algo', '')}\n")
             buf.write("\n")
             buf.write("=== 피팅 파라미터 ===\n")
             buf.write("심볼,이름,단위,피팅값\n")
@@ -546,7 +607,7 @@ def eis_fitting_tab():
 
 
 # ── 공통 파서 (장기 데이터용) ──────────────────────────────────────────────────
-def parse_idf(file_bytes: bytes) -> pd.DataFrame | None:
+def parse_idf(file_bytes: bytes, downsample: int = 60) -> pd.DataFrame | None:
     text = file_bytes.decode("latin-1")
     technique_match = re.search(r'Technique=(\w+)', text)
     technique = technique_match.group(1) if technique_match else ""
@@ -588,7 +649,7 @@ def parse_idf(file_bytes: bytes) -> pd.DataFrame | None:
         raw_df["voltage_v"] = raw_df["col3"]
 
     df = raw_df[["time_s", "current_a", "voltage_v"]].copy()
-    df = df.iloc[::60].reset_index(drop=True)
+    df = df.iloc[::downsample].reset_index(drop=True)
     return df
 
 
@@ -747,9 +808,9 @@ def make_ivp_chart(plot_data, x_min, x_max, y1_min, y1_max, y2_min, y2_max):
 
 
 def render_settings(key_prefix: str):
-    """시간 단위 / Active Area / Organize 버튼을 탭 내부에 렌더링"""
+    """시간 단위 / Active Area / 다운샘플 / 초기5분제거 / Organize 버튼을 탭 내부에 렌더링"""
     with st.expander("⚙️ 설정", expanded=True):
-        c1, c2 = st.columns(2)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.caption("🕐 시간 단위")
             time_unit = st.radio(
@@ -766,10 +827,26 @@ def render_settings(key_prefix: str):
                 min_value=0.001, value=1.0, step=0.1, format="%.3f",
                 key=f"{key_prefix}_active_area",
             )
+        with c3:
+            st.caption("📉 다운샘플링 배율")
+            downsample = st.number_input(
+                "N배 다운샘플링",
+                min_value=1, max_value=1000, value=60, step=1,
+                key=f"{key_prefix}_downsample",
+                help="1=전체, 60=60배 축약"
+            )
+        with c4:
+            st.caption("🗑️ 초기 5분 데이터 제거")
+            remove_5min = st.toggle(
+                "초기 5분 제거",
+                value=False,
+                key=f"{key_prefix}_remove5min",
+                help="ON: 각 파일의 처음 300초(5분) 데이터를 제거합니다"
+            )
     time_divisor = {"초 (s)": 1, "분 (min)": 60, "시간 (h)": 3600, "일 (day)": 86400}[time_unit]
     time_label   = {"초 (s)": "s", "분 (min)": "min", "시간 (h)": "h", "일 (day)": "day"}[time_unit]
     organize     = st.button("▶ Organize", type="primary", key=f"{key_prefix}_organize")
-    return time_divisor, time_label, active_area, organize
+    return time_divisor, time_label, active_area, organize, downsample, remove_5min
 
 
 # ── 메인 탭 배너 (상위) ────────────────────────────────────────────────────────
@@ -788,7 +865,7 @@ with tab_longterm:
                 "IDF 파일 업로드 (복수 선택 가능)",
                 type=["idf"], accept_multiple_files=True, key="uploader_individual",
             )
-            time_divisor, time_label, active_area, organize = render_settings("ind")
+            time_divisor, time_label, active_area, organize, downsample, remove_5min = render_settings("ind")
 
             if not uploaded_files_ind:
                 st.info("👆 IDF 파일을 업로드해 주세요.")
@@ -801,17 +878,23 @@ with tab_longterm:
                     st.session_state["time_label_ind"]   = time_label
                     st.session_state["time_divisor_ind"] = time_divisor
                     st.session_state["active_area_ind"]  = active_area
+                    st.session_state["downsample_ind"]   = downsample
+                    st.session_state["remove5min_ind"]   = remove_5min
 
                 file_data_ind    = st.session_state["file_data_ind"]
                 time_label_ind   = st.session_state["time_label_ind"]
                 time_divisor_ind = st.session_state["time_divisor_ind"]
                 active_area_ind  = st.session_state["active_area_ind"]
+                downsample_ind   = st.session_state.get("downsample_ind", 60)
+                remove5min_ind   = st.session_state.get("remove5min_ind", False)
                 time_col_ind     = f"Time ({time_label_ind})"
 
                 parsed_ind = {}
                 for filename, file_bytes in file_data_ind.items():
-                    df = parse_idf(file_bytes)
+                    df = parse_idf(file_bytes, downsample_ind)
                     if df is not None:
+                        if remove5min_ind:
+                            df = df[df["time_s"] >= 300].reset_index(drop=True)
                         parsed_ind[filename] = pd.DataFrame({
                             time_col_ind: df["time_s"] / time_divisor_ind,
                             current_col:  (df["current_a"] / active_area_ind).round(2),
@@ -830,7 +913,7 @@ with tab_longterm:
                             avg_current_density = round(float(display_df[current_col].mean()), 2)
 
                             col1, col2, col3, col4 = st.columns(4)
-                            col1.metric("총 데이터 포인트", f"{len(display_df):,} (60배 다운샘플)")
+                            col1.metric("총 데이터 포인트", f"{len(display_df):,} ({downsample_ind}배 다운샘플)")
                             col2.metric("총 시간", f"{t_max:.2f} {time_label_ind}")
                             col3.metric("전압 범위", f"{display_df[voltage_col].min():.2f} ~ {display_df[voltage_col].max():.2f} V")
                             col4.metric("전류밀도 범위", f"{display_df[current_col].min():.2f} ~ {display_df[current_col].max():.2f} A/cm²")
@@ -918,7 +1001,7 @@ with tab_longterm:
                 "IDF 파일 업로드 (복수 선택 가능)",
                 type=["idf"], accept_multiple_files=True, key="uploader_overlay",
             )
-            time_divisor, time_label, active_area, organize = render_settings("ov")
+            time_divisor, time_label, active_area, organize, downsample, remove_5min = render_settings("ov")
 
             if not uploaded_files_ov:
                 st.info("👆 IDF 파일을 업로드해 주세요.")
@@ -931,17 +1014,23 @@ with tab_longterm:
                     st.session_state["time_label_ov"]   = time_label
                     st.session_state["time_divisor_ov"] = time_divisor
                     st.session_state["active_area_ov"]  = active_area
+                    st.session_state["downsample_ov"]   = downsample
+                    st.session_state["remove5min_ov"]   = remove_5min
 
                 file_data_ov    = st.session_state["file_data_ov"]
                 time_label_ov   = st.session_state["time_label_ov"]
                 time_divisor_ov = st.session_state["time_divisor_ov"]
                 active_area_ov  = st.session_state["active_area_ov"]
+                downsample_ov   = st.session_state.get("downsample_ov", 60)
+                remove5min_ov   = st.session_state.get("remove5min_ov", False)
                 time_col_ov     = f"Time ({time_label_ov})"
 
                 parsed_ov = {}
                 for filename, file_bytes in file_data_ov.items():
-                    df = parse_idf(file_bytes)
+                    df = parse_idf(file_bytes, downsample_ov)
                     if df is not None:
+                        if remove5min_ov:
+                            df = df[df["time_s"] >= 300].reset_index(drop=True)
                         parsed_ov[filename] = pd.DataFrame({
                             time_col_ov: df["time_s"] / time_divisor_ov,
                             current_col: (df["current_a"] / active_area_ov).round(2),
@@ -1089,7 +1178,7 @@ with tab_longterm:
                         if f is not None:
                             slot_files[slot_num] = f
 
-            time_divisor, time_label, active_area, organize = render_settings("ct")
+            time_divisor, time_label, active_area, organize, downsample, remove_5min = render_settings("ct")
 
             if not slot_files:
                 st.info("👆 파일을 순서대로 올린 후 **Organize** 버튼을 눌러주세요.")
@@ -1116,10 +1205,12 @@ with tab_longterm:
                 for slot_num in sorted(concat_slots.keys()):
                     raw  = concat_slots[slot_num]
                     name = concat_names[slot_num]
-                    df   = parse_idf(raw)
+                    df   = parse_idf(raw, downsample_ct)
                     if df is None:
                         st.warning(f"⚠️ {slot_num}번째 파일({name}) 파싱 실패, 건너뜁니다.")
                         continue
+                    if remove5min_ct:
+                        df = df[df["time_s"] >= 300].reset_index(drop=True)
                     part = pd.DataFrame({
                         time_col_ct: df["time_s"] / time_divisor_ct + time_offset,
                         current_col: (df["current_a"] / active_area_ct).round(2),
