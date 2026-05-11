@@ -824,6 +824,60 @@ with tab_ivp:
 # EIS 정리
 # ══════════════════════════════════════════════════════════════════════════════
 
+def make_nyquist(plot_data_eis, xmin, xmax, ymin, ymax):
+    """나이키스트 플랏: Z'(a) vs -Z''(b)"""
+    fig = go.Figure()
+    for i, item in enumerate(plot_data_eis):
+        color = COLORS[i % len(COLORS)]
+        df, name = item["df"], item["name"]
+        fig.add_trace(go.Scatter(
+            x=df["Z'(a)"], y=-df["Z''(b)"],
+            mode="lines+markers", name=name,
+            line=dict(color=color, width=2),
+            marker=dict(size=4),
+        ))
+    fig.update_layout(
+        xaxis=dict(title="Z' (Ω)", range=[xmin, xmax] if xmin != xmax else None,
+                   showgrid=True, gridcolor="#e0e0e0",
+                   zeroline=True, zerolinecolor="black", zerolinewidth=2.5),
+        yaxis=dict(title="-Z'' (Ω)", range=[ymin, ymax] if ymin != ymax else None,
+                   showgrid=True, gridcolor="#e0e0e0",
+                   zeroline=True, zerolinecolor="black", zerolinewidth=2.5),
+        plot_bgcolor="white", paper_bgcolor="white",
+        height=450, margin=dict(l=60, r=40, t=40, b=60),
+        legend=dict(orientation="v", x=1.01, y=1),
+    )
+    return fig
+
+
+def make_bode(plot_data_eis, fmin, fmax, zmin, zmax):
+    """보데 플랏: Freq vs -Z''(b), 로그 X축"""
+    fig = go.Figure()
+    for i, item in enumerate(plot_data_eis):
+        color = COLORS[i % len(COLORS)]
+        df, name = item["df"], item["name"]
+        freq = df["Freq(Hz)"]
+        z_imag = -df["Z''(b)"]
+        fig.add_trace(go.Scatter(
+            x=freq, y=z_imag, mode="lines+markers", name=name,
+            line=dict(color=color, width=2), marker=dict(size=4),
+        ))
+    fig.update_layout(
+        xaxis=dict(title="Frequency (Hz)", type="log",
+                   range=[np.log10(fmin) if fmin > 0 else None,
+                          np.log10(fmax) if fmax > 0 else None],
+                   showgrid=True, gridcolor="#e0e0e0",
+                   zeroline=True, zerolinecolor="black", zerolinewidth=2.5),
+        yaxis=dict(title="-Z'' (Ω)", range=[zmin, zmax] if zmin != zmax else None,
+                   showgrid=True, gridcolor="#e0e0e0",
+                   zeroline=True, zerolinecolor="black", zerolinewidth=2.5),
+        plot_bgcolor="white", paper_bgcolor="white",
+        height=450, margin=dict(l=60, r=40, t=40, b=60),
+        legend=dict(orientation="v", x=1.01, y=1),
+    )
+    return fig
+
+
 # ── EIS 공통 함수 ──────────────────────────────────────────────────────────────
 def natural_sort_key(s):
     return re.sub(r'\d+', lambda x: x.group(0).zfill(10), s.lower())
@@ -1020,6 +1074,44 @@ with tab_eis:
                     mime="text/csv", key="calc_csv_dl"
                 )
 
+                # ── 나이키스트 / 보데 플랏 ────────────────────────────────────
+                st.divider()
+                st.subheader("📈 EIS 플랏")
+
+                # 파일별 df 수집 (parse_z_file 재호출)
+                eis_plot_data_calc = []
+                for uf in uploaded_files_calc:
+                    uf.seek(0)
+                    df_p, _, _ = parse_z_file(uf)
+                    if df_p is not None:
+                        eis_plot_data_calc.append({"df": df_p, "name": os.path.splitext(uf.name)[0]})
+
+                if eis_plot_data_calc:
+                    col_ny, col_bo = st.columns(2)
+
+                    with col_ny:
+                        st.markdown("**🔵 나이키스트 플랏**")
+                        with st.expander("⚙️ 축 범위 설정", expanded=False):
+                            ny1, ny2 = st.columns(2)
+                            ny3, ny4 = st.columns(2)
+                            ny_xmin = ny1.number_input("X min (Z')", value=0.0, step=0.01, key="calc_ny_xmin")
+                            ny_xmax = ny2.number_input("X max (Z')", value=0.0, step=0.01, key="calc_ny_xmax")
+                            ny_ymin = ny3.number_input("Y min (-Z'')", value=0.0, step=0.01, key="calc_ny_ymin")
+                            ny_ymax = ny4.number_input("Y max (-Z'')", value=0.0, step=0.01, key="calc_ny_ymax")
+                        st.plotly_chart(make_nyquist(eis_plot_data_calc, ny_xmin, ny_xmax, ny_ymin, ny_ymax), use_container_width=True)
+
+                    with col_bo:
+                        st.markdown("**📊 보데 플랏**")
+                        with st.expander("⚙️ 축 범위 설정", expanded=False):
+                            bo1, bo2 = st.columns(2)
+                            bo3, bo4 = st.columns(2)
+                            bo_fmin = bo1.number_input("Freq min", value=0.1, step=0.1, key="calc_bo_fmin")
+                            bo_fmax = bo2.number_input("Freq max", value=100000.0, step=1000.0, key="calc_bo_fmax")
+                            bo_zmin = bo3.number_input("-Z'' min", value=0.0, step=0.01, key="calc_bo_zmin")
+                            bo_zmax = bo4.number_input("-Z'' max", value=0.0, step=0.01, key="calc_bo_zmax")
+                        st.plotly_chart(make_bode(eis_plot_data_calc, bo_fmin, bo_fmax, bo_zmin, bo_zmax), use_container_width=True)
+
+
     # ── 옴믹 저항 제거기 ────────────────────────────────────────────────────────
     with eis_sub_rem:
         st.subheader("⚡ EIS 옴믹 저항 제거기")
@@ -1083,3 +1175,40 @@ with tab_eis:
                     file_name=f"EIS_Combined_Data_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv", key="rem_csv_dl"
                 )
+
+            # ── 나이키스트 / 보데 플랏 ────────────────────────────────────────
+            st.divider()
+            st.subheader("📈 EIS 플랏")
+
+            eis_plot_data_rem = []
+            for uf in uploaded_files_rem:
+                uf.seek(0)
+                df_p, _, _ = parse_z_file(uf)
+                if df_p is not None:
+                    eis_plot_data_rem.append({"df": df_p, "name": os.path.splitext(uf.name)[0]})
+
+            if eis_plot_data_rem:
+                col_ny2, col_bo2 = st.columns(2)
+
+                with col_ny2:
+                    st.markdown("**🔵 나이키스트 플랏**")
+                    with st.expander("⚙️ 축 범위 설정", expanded=False):
+                        ny1, ny2 = st.columns(2)
+                        ny3, ny4 = st.columns(2)
+                        ny_xmin2 = ny1.number_input("X min (Z')", value=0.0, step=0.01, key="rem_ny_xmin")
+                        ny_xmax2 = ny2.number_input("X max (Z')", value=0.0, step=0.01, key="rem_ny_xmax")
+                        ny_ymin2 = ny3.number_input("Y min (-Z'')", value=0.0, step=0.01, key="rem_ny_ymin")
+                        ny_ymax2 = ny4.number_input("Y max (-Z'')", value=0.0, step=0.01, key="rem_ny_ymax")
+                    st.plotly_chart(make_nyquist(eis_plot_data_rem, ny_xmin2, ny_xmax2, ny_ymin2, ny_ymax2), use_container_width=True)
+
+                with col_bo2:
+                    st.markdown("**📊 보데 플랏**")
+                    with st.expander("⚙️ 축 범위 설정", expanded=False):
+                        bo1, bo2 = st.columns(2)
+                        bo3, bo4 = st.columns(2)
+                        bo_fmin2 = bo1.number_input("Freq min", value=0.1, step=0.1, key="rem_bo_fmin")
+                        bo_fmax2 = bo2.number_input("Freq max", value=100000.0, step=1000.0, key="rem_bo_fmax")
+                        bo_zmin2 = bo3.number_input("-Z'' min", value=0.0, step=0.01, key="rem_bo_zmin")
+                        bo_zmax2 = bo4.number_input("-Z'' max", value=0.0, step=0.01, key="rem_bo_zmax")
+                    st.plotly_chart(make_bode(eis_plot_data_rem, bo_fmin2, bo_fmax2, bo_zmin2, bo_zmax2), use_container_width=True)
+
