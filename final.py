@@ -485,43 +485,45 @@ def eis_fitting_tab():
 
         # ── 결과 (파라미터 위에 표시) ───────────────────────────────────────────────
         if run_btn:
-            status_placeholder.markdown(
-                f'<p style="color:#555;font-size:0.85rem;margin-top:8px">'
-                f'⏳ {sel_algo_label} 최적화 진행 중...</p>',
-                unsafe_allow_html=True
-            )
+            # p0/lo_b/hi_b는 session_state에 저장된 이전 값 사용
+            # (파라미터 카드가 아직 렌더링 안 됐으므로)
+            p0   = st.session_state.get("fit_p0_cache",   [])
+            lo_b = st.session_state.get("fit_lo_b_cache", [])
+            hi_b = st.session_state.get("fit_hi_b_cache", [])
 
             freq_arr = df_fit["Freq"].values
             zr_arr   = df_fit["Zr"].values
             zi_arr   = df_fit["Zi"].values
             n_params = 2 + num_rc * 3
 
-            if len(freq_arr) < n_params:
+            if not p0 or len(p0) != n_params:
+                st.warning("⚠️ 파라미터를 먼저 설정하고 다시 실행해 주세요.")
+            elif len(freq_arr) < n_params:
                 st.error(f"데이터 포인트({len(freq_arr)})가 파라미터 수({n_params})보다 적습니다.")
             else:
+                p0 = list(p0)  # mutable copy
                 if auto_init:
-                    # Rs 추정: Z''이 음수→양수로 바뀌는 교차점의 Z'
-                    # (유도성 고주파 영역 제외하고 실제 Rs 추정)
+                    # Rs 추정: Z''이 양→음으로 바뀌는 교차점의 Z'
                     rs_est = float(zr_arr[np.argmax(freq_arr)])  # fallback
                     for _i in range(len(zi_arr) - 1):
                         if zi_arr[_i] > 0 and zi_arr[_i+1] <= 0:
-                            # 양수→음수 교차 (고→저주파 방향)
                             _t = zi_arr[_i] / (zi_arr[_i] - zi_arr[_i+1])
                             rs_est = float(zr_arr[_i] + _t * (zr_arr[_i+1] - zr_arr[_i]))
                             break
                         elif zi_arr[_i] <= 0 and zi_arr[_i+1] > 0:
-                            # 음수→양수 교차
                             _t = -zi_arr[_i] / (zi_arr[_i+1] - zi_arr[_i])
                             rs_est = float(zr_arr[_i] + _t * (zr_arr[_i+1] - zr_arr[_i]))
                             break
 
                     re_est  = float(zr_arr[np.argmin(freq_arr)])
                     r_total = max(re_est - rs_est, 0.01)
-                    p0[1]   = rs_est
+                    if len(p0) > 1:
+                        p0[1] = rs_est
                     ws = [0.10, 0.25, 0.40, 0.15, 0.10][:num_rc]
                     s  = sum(ws)
                     for i in range(num_rc):
-                        p0[2 + i*3] = r_total * ws[i] / s
+                        if 2 + i*3 < len(p0):
+                            p0[2 + i*3] = r_total * ws[i] / s
 
                 # LM은 경계 조건 불가 → 초기값 클리핑만
                 if sel_algo_key == "LM":
