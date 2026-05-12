@@ -602,17 +602,10 @@ def eis_fitting_tab():
                 if sel_algo_key == "LM":
                     p0 = [max(lo, min(hi, v)) for v, lo, hi in zip(p0, lo_b, hi_b)]
 
-                try:
-                        # 로딩바 (버튼 아래 미리 선언한 placeholder에 표시)
-                        progress_placeholder.progress(0, text=f"⏳ {sel_algo_label} 실행 중...")
-
-                        def _update_progress(v):
-                            pct = int(v * 100)
-                            progress_placeholder.progress(pct, text=f"⏳ {sel_algo_label} 실행 중... {pct}%")
-
+                with st.spinner(f"{sel_algo_label} 최적화 중..."):
+                    try:
                         popt = run_fitting(sel_algo_key, p0, lo_b, hi_b,
-                                           freq_arr, zr_arr, zi_arr, num_rc,
-                                           progress_cb=_update_progress)
+                                           freq_arr, zr_arr, zi_arr, num_rc)
 
                         Z_fit_full = circuit_impedance(df["Freq"].values, popt, num_rc)
                         chi2     = chi2_fn(popt, freq_arr, zr_arr, zi_arr, num_rc)
@@ -633,10 +626,10 @@ def eis_fitting_tab():
                             "fit_fit_algo": sel_algo_label,
                             "fit_fit_filename": uploaded_fit.name,
                         })
-                        progress_placeholder.progress(100, text="✅ 완료!")
                         status_placeholder.empty()
+                        st.rerun()
 
-                except Exception as e:
+                    except Exception as e:
                         status_placeholder.empty()
                         st.error(f"❌ 피팅 실패: {e}")
 
