@@ -397,7 +397,7 @@ def eis_fitting_tab():
         st.markdown("### 📡 피팅 주파수 범위")
         fc1, fc2 = st.columns(2)
         f_lo = fc1.number_input("최소 (Hz)", value=float(df["Freq"].min()), format="%.4g", key="fit_fit_flo")
-        f_hi = fc2.number_input("최대 (Hz)", value=float(df["Freq"].max()), format="%.4g", key="fit_fit_fhi")
+        f_hi = fc2.number_input("최대 (Hz)", value=20000.0, format="%.4g", key="fit_fit_fhi")
         df_fit = df[(df["Freq"] >= f_lo) & (df["Freq"] <= f_hi)].reset_index(drop=True)
         st.caption(f"사용 포인트: **{len(df_fit)}개**")
         st.markdown('</div>', unsafe_allow_html=True)
