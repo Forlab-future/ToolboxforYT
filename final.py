@@ -674,7 +674,21 @@ def eis_fitting_tab():
                 st.error(f"데이터 포인트({len(freq_arr)})가 파라미터 수({n_params})보다 적습니다.")
             else:
                 if auto_init:
-                    rs_est  = float(zr_arr[np.argmax(freq_arr)])
+                    # Rs 추정: Z''이 음수→양수로 바뀌는 교차점의 Z'
+                    # (유도성 고주파 영역 제외하고 실제 Rs 추정)
+                    rs_est = float(zr_arr[np.argmax(freq_arr)])  # fallback
+                    for _i in range(len(zi_arr) - 1):
+                        if zi_arr[_i] > 0 and zi_arr[_i+1] <= 0:
+                            # 양수→음수 교차 (고→저주파 방향)
+                            _t = zi_arr[_i] / (zi_arr[_i] - zi_arr[_i+1])
+                            rs_est = float(zr_arr[_i] + _t * (zr_arr[_i+1] - zr_arr[_i]))
+                            break
+                        elif zi_arr[_i] <= 0 and zi_arr[_i+1] > 0:
+                            # 음수→양수 교차
+                            _t = -zi_arr[_i] / (zi_arr[_i+1] - zi_arr[_i])
+                            rs_est = float(zr_arr[_i] + _t * (zr_arr[_i+1] - zr_arr[_i]))
+                            break
+
                     re_est  = float(zr_arr[np.argmin(freq_arr)])
                     r_total = max(re_est - rs_est, 0.01)
                     p0[1]   = rs_est
