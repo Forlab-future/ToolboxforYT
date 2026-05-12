@@ -361,25 +361,64 @@ def eis_fitting_tab():
 
     # ── 왼쪽: 그래프 ──────────────────────────────────────────────────────────────
     with col_L:
-        Z_fit_full = st.session_state.get("fit_Z_fit_full", None)
+        Z_fit_full  = st.session_state.get("fit_Z_fit_full", None)
+        popt_graph  = st.session_state.get("fit_popt", None)
+        num_rc_graph = (len(popt_graph) - 2) // 3 if popt_graph is not None else 0
 
-        with st.expander("⚙️ 나이키스트 축 범위", expanded=False):
+        # 아크별 임피던스 계산
+        arc_Z_list = []  # [(label, color, Z_arc_array), ...]
+        if popt_graph is not None:
+            freq_all = df["Freq"].values
+            omega_all = 2 * np.pi * freq_all
+            arc_colors = ["#2ca02c","#d62728","#9467bd","#8c564b","#e377c2"]
+            for i in range(num_rc_graph):
+                base = 2 + i * 3
+                R_i = popt_graph[base]
+                Q_i = popt_graph[base+1]
+                n_i = popt_graph[base+2]
+                Z_arc = z_parallel_cpe(R_i, Q_i, n_i, omega_all)
+                arc_Z_list.append((f"아크 {i+1} (R{i+1}‖CPE{i+1})",
+                                   arc_colors[i % len(arc_colors)], Z_arc))
+
+        # ── 축 범위 설정 (나이키스트 + 보데 공통) ────────────────────────────
+        with st.expander("⚙️ 축 범위 설정", expanded=False):
+            st.caption("나이키스트")
             a1, a2, a3, a4 = st.columns(4)
             ny_xmin = a1.number_input("X min", value=0.0, format="%.4f", key="fit_ny_xmin")
             ny_xmax = a2.number_input("X max", value=0.0, format="%.4f", key="fit_ny_xmax")
             ny_ymin = a3.number_input("Y min", value=0.0, format="%.4f", key="fit_ny_ymin")
             ny_ymax = a4.number_input("Y max", value=0.0, format="%.4f", key="fit_ny_ymax")
-        st.plotly_chart(plot_nyquist(df, Z_fit_full, ny_xmin, ny_xmax, ny_ymin, ny_ymax),
-                        use_container_width=True)
-
-        with st.expander("⚙️ 보데 축 범위", expanded=False):
+            st.caption("보데")
             b1, b2, b3, b4 = st.columns(4)
             bo_fmin = b1.number_input("Freq min", value=0.1,      format="%.4g", key="fit_bo_fmin")
             bo_fmax = b2.number_input("Freq max", value=100000.0, format="%.4g", key="fit_bo_fmax")
             bo_ymin = b3.number_input("Y min",    value=0.0,      format="%.4f", key="fit_bo_ymin")
             bo_ymax = b4.number_input("Y max",    value=0.0,      format="%.4f", key="fit_bo_ymax")
-        st.plotly_chart(plot_bode(df, Z_fit_full, bo_fmin, bo_fmax, bo_ymin, bo_ymax),
-                        use_container_width=True)
+
+        # ── 나이키스트 + 보데 나란히 ─────────────────────────────────────────
+        g_ny, g_bo = st.columns(2)
+
+        with g_ny:
+            # 나이키스트
+            fig_ny = plot_nyquist(df, Z_fit_full, ny_xmin, ny_xmax, ny_ymin, ny_ymax)
+            for label, color, Z_arc in arc_Z_list:
+                fig_ny.add_trace(go.Scatter(
+                    x=Z_arc.real, y=-Z_arc.imag,
+                    mode="lines", name=label,
+                    line=dict(color=color, width=1.5, dash="dot"),
+                ))
+            st.plotly_chart(fig_ny, use_container_width=True)
+
+        with g_bo:
+            # 보데
+            fig_bo = plot_bode(df, Z_fit_full, bo_fmin, bo_fmax, bo_ymin, bo_ymax)
+            for label, color, Z_arc in arc_Z_list:
+                fig_bo.add_trace(go.Scatter(
+                    x=df["Freq"].values, y=-Z_arc.imag,
+                    mode="lines", name=label,
+                    line=dict(color=color, width=1.5, dash="dot"),
+                ))
+            st.plotly_chart(fig_bo, use_container_width=True)
 
     # ── 오른쪽: 컨트롤 ────────────────────────────────────────────────────────────
     with col_R:
@@ -477,10 +516,6 @@ def eis_fitting_tab():
             if cur_group:
                 groups.append(cur_group)
 
-            # L, Rs 먼저 메트릭으로
-            base_items = [(s,n,u,v) for (s,n,u,v) in groups[0] if s in ("L","Rs")] if groups else []
-            arc_groups = [g for g in groups if not all(s in ("L","Rs") for (s,n,u,v) in g)]
-
             def _fmt_display(sym, v):
                 """UI 표시용: L은 전체, 나머지는 소수점 4자리"""
                 if sym == "L":
@@ -489,12 +524,30 @@ def eis_fitting_tab():
                     return f"{v:.6e}"
                 return f"{v:.4f}"
 
-            if base_items:
-                b_cols = st.columns(len(base_items))
-                for col, (sym, name, unit, val) in zip(b_cols, base_items):
-                    tag = f"{sym} ({unit})" if unit else sym
-                    col.metric(tag, _fmt_display(sym, val))
+            # L만 메트릭으로
+            L_item = next(((s,n,u,v) for (s,n,u,v) in (groups[0] if groups else []) if s == "L"), None)
+            if L_item:
+                s, n, u, v = L_item
+                st.metric(f"{s} ({u})", _fmt_display(s, v))
                 st.markdown(" ")
+
+            # Rs + 아크 모두 테이블
+            # groups[0] = [L, Rs], groups[1..] = 아크들
+            # Rs 테이블
+            rs_items = [(s,n,u,v) for (s,n,u,v) in (groups[0] if groups else []) if s == "Rs"]
+            if rs_items:
+                st.markdown(
+                    '<p style="font-size:0.75rem;font-weight:700;color:#4361ee;margin:8px 0 2px;">직렬 저항</p>',
+                    unsafe_allow_html=True
+                )
+                tbl_rs = {
+                    "파라미터": [f"{s} ({u})" if u else s for (s,n,u,v) in rs_items],
+                    "이름":     [n for (s,n,u,v) in rs_items],
+                    "피팅값":   [_fmt_display(s, v) for (s,n,u,v) in rs_items],
+                }
+                st.dataframe(pd.DataFrame(tbl_rs), use_container_width=True, hide_index=True)
+
+            arc_groups = [g for g in groups if not all(s in ("L","Rs") for (s,n,u,v) in g)]
 
             # 아크별 테이블
             for g in arc_groups:
