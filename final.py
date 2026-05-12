@@ -494,9 +494,20 @@ def eis_fitting_tab():
 
         p0, lo_b, hi_b = [], [], []
 
-        # Rs 초기값: Z''이 양→음으로 바뀌는 교차점의 Z' (내삽)
+        # L, Rs 자동 추정
         _zr = df["Zr"].values
         _zi = df["Zi"].values
+        _freq = df["Freq"].values
+
+        # L 추정: 유도성 영역(Z''>0) 고주파에서 L = Z''/(2π·f)
+        _L_default = 1e-7  # fallback
+        _inductive = np.where(_zi > 0)[0]
+        if len(_inductive) > 0:
+            _idx = _inductive[0]
+            _omega_L = 2 * np.pi * _freq[_idx]
+            _L_default = float(_zi[_idx] / _omega_L)
+
+        # Rs 초기값: Z''이 양→음으로 바뀌는 교차점의 Z' (내삽)
         _rs_default = 0.30  # fallback
         for _k in range(len(_zi) - 1):
             if _zi[_k] > 0 and _zi[_k+1] <= 0:
@@ -509,9 +520,9 @@ def eis_fitting_tab():
         # L
         st.markdown('<p class="param-label">L [H] — 인덕턴스</p>', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
-        v0_L  = c1.number_input("v", value=1e-7, format="%.2e", key="p0_L",  label_visibility="collapsed")
-        vlo_L = c2.number_input("l", value=1e-12, format="%.2e", key="lo_L", label_visibility="collapsed")
-        vhi_L = c3.number_input("h", value=1e-3,  format="%.2e", key="hi_L", label_visibility="collapsed")
+        v0_L  = c1.number_input("v", value=_L_default,        format="%.2e", key="p0_L",  label_visibility="collapsed")
+        vlo_L = c2.number_input("l", value=_L_default*0.1,    format="%.2e", key="lo_L", label_visibility="collapsed")
+        vhi_L = c3.number_input("h", value=_L_default*10.0,   format="%.2e", key="hi_L", label_visibility="collapsed")
         p0.append(v0_L); lo_b.append(vlo_L); hi_b.append(vhi_L)
 
         # Rs — 파일명 기반 key로 session_state 캐시 우회
