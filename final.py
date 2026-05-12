@@ -598,9 +598,10 @@ def eis_fitting_tab():
                         if 2 + i*3 < len(p0):
                             p0[2 + i*3] = r_total * ws[i] / s
 
-                # LM은 경계 조건 불가 → 초기값 클리핑만
-                if sel_algo_key == "LM":
-                    p0 = [max(lo, min(hi, v)) for v, lo, hi in zip(p0, lo_b, hi_b)]
+                # 모든 초기값을 경계 내로 클리핑 (bounds 위반 방지)
+                p0 = [max(lo, min(hi, v)) for v, lo, hi in zip(p0, lo_b, hi_b)]
+
+                # LM은 경계 조건 불가 → 클리핑만 (이미 위에서 처리됨)
 
                 with st.spinner(f"{sel_algo_label} 최적화 중..."):
                     try:
