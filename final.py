@@ -405,23 +405,26 @@ def eis_fitting_tab():
         # ── 나이키스트 + 보데 나란히 ─────────────────────────────────────────
         g_ny, g_bo = st.columns(2)
 
+        # 나이키스트용: 주파수 내림차순(고→저) 정렬해서 호 방향 일치
+        freq_vals = df["Freq"].values
+        sort_idx  = np.argsort(freq_vals)[::-1]   # 고주파 → 저주파
+
         with g_ny:
-            # 나이키스트
             fig_ny = plot_nyquist(df, Z_fit_full, ny_xmin, ny_xmax, ny_ymin, ny_ymax)
             for label, color, Z_arc in arc_Z_list:
+                Z_sorted = Z_arc[sort_idx]
                 fig_ny.add_trace(go.Scatter(
-                    x=Z_arc.real, y=-Z_arc.imag,
+                    x=Z_sorted.real, y=-Z_sorted.imag,
                     mode="lines", name=label,
                     line=dict(color=color, width=1.5, dash="dot"),
                 ))
             st.plotly_chart(fig_ny, use_container_width=True)
 
         with g_bo:
-            # 보데
             fig_bo = plot_bode(df, Z_fit_full, bo_fmin, bo_fmax, bo_ymin, bo_ymax)
             for label, color, Z_arc in arc_Z_list:
                 fig_bo.add_trace(go.Scatter(
-                    x=df["Freq"].values, y=-Z_arc.imag,
+                    x=freq_vals, y=-Z_arc.imag,
                     mode="lines", name=label,
                     line=dict(color=color, width=1.5, dash="dot"),
                 ))
