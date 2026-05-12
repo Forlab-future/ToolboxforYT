@@ -484,6 +484,88 @@ def eis_fitting_tab():
         progress_placeholder = st.empty()
 
         # ── 결과 (파라미터 위에 표시) ───────────────────────────────────────────────
+        if run_btn:
+            status_placeholder.markdown(
+                f'<p style="color:#555;font-size:0.85rem;margin-top:8px">'
+                f'⏳ {sel_algo_label} 최적화 진행 중...</p>',
+                unsafe_allow_html=True
+            )
+
+            freq_arr = df_fit["Freq"].values
+            zr_arr   = df_fit["Zr"].values
+            zi_arr   = df_fit["Zi"].values
+            n_params = 2 + num_rc * 3
+
+            if len(freq_arr) < n_params:
+                st.error(f"데이터 포인트({len(freq_arr)})가 파라미터 수({n_params})보다 적습니다.")
+            else:
+                if auto_init:
+                    # Rs 추정: Z''이 음수→양수로 바뀌는 교차점의 Z'
+                    # (유도성 고주파 영역 제외하고 실제 Rs 추정)
+                    rs_est = float(zr_arr[np.argmax(freq_arr)])  # fallback
+                    for _i in range(len(zi_arr) - 1):
+                        if zi_arr[_i] > 0 and zi_arr[_i+1] <= 0:
+                            # 양수→음수 교차 (고→저주파 방향)
+                            _t = zi_arr[_i] / (zi_arr[_i] - zi_arr[_i+1])
+                            rs_est = float(zr_arr[_i] + _t * (zr_arr[_i+1] - zr_arr[_i]))
+                            break
+                        elif zi_arr[_i] <= 0 and zi_arr[_i+1] > 0:
+                            # 음수→양수 교차
+                            _t = -zi_arr[_i] / (zi_arr[_i+1] - zi_arr[_i])
+                            rs_est = float(zr_arr[_i] + _t * (zr_arr[_i+1] - zr_arr[_i]))
+                            break
+
+                    re_est  = float(zr_arr[np.argmin(freq_arr)])
+                    r_total = max(re_est - rs_est, 0.01)
+                    p0[1]   = rs_est
+                    ws = [0.10, 0.25, 0.40, 0.15, 0.10][:num_rc]
+                    s  = sum(ws)
+                    for i in range(num_rc):
+                        p0[2 + i*3] = r_total * ws[i] / s
+
+                # LM은 경계 조건 불가 → 초기값 클리핑만
+                if sel_algo_key == "LM":
+                    p0 = [max(lo, min(hi, v)) for v, lo, hi in zip(p0, lo_b, hi_b)]
+
+                try:
+                        # 로딩바 (버튼 아래 미리 선언한 placeholder에 표시)
+                        progress_placeholder.progress(0, text=f"⏳ {sel_algo_label} 실행 중...")
+
+                        def _update_progress(v):
+                            pct = int(v * 100)
+                            progress_placeholder.progress(pct, text=f"⏳ {sel_algo_label} 실행 중... {pct}%")
+
+                        popt = run_fitting(sel_algo_key, p0, lo_b, hi_b,
+                                           freq_arr, zr_arr, zi_arr, num_rc,
+                                           progress_cb=_update_progress)
+
+                        Z_fit_full = circuit_impedance(df["Freq"].values, popt, num_rc)
+                        chi2     = chi2_fn(popt, freq_arr, zr_arr, zi_arr, num_rc)
+                        chi2_red = chi2 / max(1, 2*len(freq_arr) - n_params)
+
+                        res_labels = [("L","인덕턴스","H"), ("Rs","직렬 저항","Ω")]
+                        for i in range(1, num_rc+1):
+                            res_labels += [
+                                (f"R{i}", f"저항 {i}",    "Ω"),
+                                (f"Q{i}", f"CPE{i} 계수", "S·sⁿ"),
+                                (f"n{i}", f"CPE{i} 지수", ""),
+                            ]
+
+                        st.session_state.update({
+                            "fit_popt": popt, "fit_Z_fit_full": Z_fit_full,
+                            "fit_chi2": chi2, "fit_chi2_red": chi2_red,
+                            "fit_res_labels": res_labels,
+                            "fit_fit_algo": sel_algo_label,
+                            "fit_fit_filename": uploaded_fit.name,
+                        })
+                        progress_placeholder.progress(100, text="✅ 완료!")
+                        status_placeholder.empty()
+
+                except Exception as e:
+                        status_placeholder.empty()
+                        st.error(f"❌ 피팅 실패: {e}")
+
+        st.markdown('</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         if "fit_popt" in st.session_state:
             popt = st.session_state["fit_popt"]
@@ -694,88 +776,6 @@ def eis_fitting_tab():
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-        if run_btn:
-            status_placeholder.markdown(
-                f'<p style="color:#555;font-size:0.85rem;margin-top:8px">'
-                f'⏳ {sel_algo_label} 최적화 진행 중...</p>',
-                unsafe_allow_html=True
-            )
-
-            freq_arr = df_fit["Freq"].values
-            zr_arr   = df_fit["Zr"].values
-            zi_arr   = df_fit["Zi"].values
-            n_params = 2 + num_rc * 3
-
-            if len(freq_arr) < n_params:
-                st.error(f"데이터 포인트({len(freq_arr)})가 파라미터 수({n_params})보다 적습니다.")
-            else:
-                if auto_init:
-                    # Rs 추정: Z''이 음수→양수로 바뀌는 교차점의 Z'
-                    # (유도성 고주파 영역 제외하고 실제 Rs 추정)
-                    rs_est = float(zr_arr[np.argmax(freq_arr)])  # fallback
-                    for _i in range(len(zi_arr) - 1):
-                        if zi_arr[_i] > 0 and zi_arr[_i+1] <= 0:
-                            # 양수→음수 교차 (고→저주파 방향)
-                            _t = zi_arr[_i] / (zi_arr[_i] - zi_arr[_i+1])
-                            rs_est = float(zr_arr[_i] + _t * (zr_arr[_i+1] - zr_arr[_i]))
-                            break
-                        elif zi_arr[_i] <= 0 and zi_arr[_i+1] > 0:
-                            # 음수→양수 교차
-                            _t = -zi_arr[_i] / (zi_arr[_i+1] - zi_arr[_i])
-                            rs_est = float(zr_arr[_i] + _t * (zr_arr[_i+1] - zr_arr[_i]))
-                            break
-
-                    re_est  = float(zr_arr[np.argmin(freq_arr)])
-                    r_total = max(re_est - rs_est, 0.01)
-                    p0[1]   = rs_est
-                    ws = [0.10, 0.25, 0.40, 0.15, 0.10][:num_rc]
-                    s  = sum(ws)
-                    for i in range(num_rc):
-                        p0[2 + i*3] = r_total * ws[i] / s
-
-                # LM은 경계 조건 불가 → 초기값 클리핑만
-                if sel_algo_key == "LM":
-                    p0 = [max(lo, min(hi, v)) for v, lo, hi in zip(p0, lo_b, hi_b)]
-
-                try:
-                        # 로딩바 (버튼 아래 미리 선언한 placeholder에 표시)
-                        progress_placeholder.progress(0, text=f"⏳ {sel_algo_label} 실행 중...")
-
-                        def _update_progress(v):
-                            pct = int(v * 100)
-                            progress_placeholder.progress(pct, text=f"⏳ {sel_algo_label} 실행 중... {pct}%")
-
-                        popt = run_fitting(sel_algo_key, p0, lo_b, hi_b,
-                                           freq_arr, zr_arr, zi_arr, num_rc,
-                                           progress_cb=_update_progress)
-
-                        Z_fit_full = circuit_impedance(df["Freq"].values, popt, num_rc)
-                        chi2     = chi2_fn(popt, freq_arr, zr_arr, zi_arr, num_rc)
-                        chi2_red = chi2 / max(1, 2*len(freq_arr) - n_params)
-
-                        res_labels = [("L","인덕턴스","H"), ("Rs","직렬 저항","Ω")]
-                        for i in range(1, num_rc+1):
-                            res_labels += [
-                                (f"R{i}", f"저항 {i}",    "Ω"),
-                                (f"Q{i}", f"CPE{i} 계수", "S·sⁿ"),
-                                (f"n{i}", f"CPE{i} 지수", ""),
-                            ]
-
-                        st.session_state.update({
-                            "fit_popt": popt, "fit_Z_fit_full": Z_fit_full,
-                            "fit_chi2": chi2, "fit_chi2_red": chi2_red,
-                            "fit_res_labels": res_labels,
-                            "fit_fit_algo": sel_algo_label,
-                            "fit_fit_filename": uploaded_fit.name,
-                        })
-                        progress_placeholder.progress(100, text="✅ 완료!")
-                        status_placeholder.empty()
-
-                except Exception as e:
-                        status_placeholder.empty()
-                        st.error(f"❌ 피팅 실패: {e}")
-
-        st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ── 공통 파서 (장기 데이터용) ──────────────────────────────────────────────────
