@@ -429,7 +429,11 @@ def eis_fitting_tab():
         with rb_col:
             run_btn = st.button("▶ 피팅 실행", type="primary", key="fit_run_fit")
 
+        # status: 버튼 옆 텍스트
         status_placeholder = sp_col.empty()
+
+        # 로딩바: 버튼 바로 아래 (카드 닫기 전)
+        progress_placeholder = st.empty()
 
         # ── 결과 (파라미터 위에 표시) ───────────────────────────────────────────────
         st.markdown('</div>', unsafe_allow_html=True)
@@ -622,12 +626,12 @@ def eis_fitting_tab():
                     p0 = [max(lo, min(hi, v)) for v, lo, hi in zip(p0, lo_b, hi_b)]
 
                 try:
-                        # 로딩바
-                        progress_bar = st.progress(0, text=f"⏳ {sel_algo_label} 실행 중...")
+                        # 로딩바 (버튼 아래 미리 선언한 placeholder에 표시)
+                        progress_placeholder.progress(0, text=f"⏳ {sel_algo_label} 실행 중...")
 
                         def _update_progress(v):
                             pct = int(v * 100)
-                            progress_bar.progress(pct, text=f"⏳ {sel_algo_label} 실행 중... {pct}%")
+                            progress_placeholder.progress(pct, text=f"⏳ {sel_algo_label} 실행 중... {pct}%")
 
                         popt = run_fitting(sel_algo_key, p0, lo_b, hi_b,
                                            freq_arr, zr_arr, zi_arr, num_rc,
@@ -652,7 +656,7 @@ def eis_fitting_tab():
                             "fit_fit_algo": sel_algo_label,
                             "fit_fit_filename": uploaded_fit.name,
                         })
-                        progress_bar.progress(100, text="✅ 완료!")
+                        progress_placeholder.progress(100, text="✅ 완료!")
                         status_placeholder.empty()
                         st.rerun()
 
@@ -888,7 +892,7 @@ def render_settings(key_prefix: str):
             st.caption("📉 다운샘플링 배율")
             downsample = st.number_input(
                 "N배 다운샘플링",
-                min_value=1, max_value=1000, value=5, step=1,
+                min_value=1, max_value=1000, value=60, step=1,
                 key=f"{key_prefix}_downsample",
                 help="1=전체, 60=60배 축약"
             )
