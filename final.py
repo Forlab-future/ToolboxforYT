@@ -209,81 +209,129 @@ def plot_bode(df, Z_fit=None, fmin=0.1, fmax=100000.0, ymin=0.0, ymax=0.0):
 # ══════════════════════════════════════════════════════════════════════════════
 # 피팅 실행 함수
 # ══════════════════════════════════════════════════════════════════════════════
-def run_fitting(algo_key, p0, lo_b, hi_b, freq_arr, zr_arr, zi_arr, num_rc):
+def run_fitting(algo_key, p0, lo_b, hi_b, freq_arr, zr_arr, zi_arr, num_rc, progress_cb=None):
+    """
+    파라미터 수가 많을수록 maxiter를 줄여 무한 대기 방지.
+    progress_cb: 진행률(0~1)을 받는 콜백 함수 (선택)
+    """
     bounds_pairs = list(zip(lo_b, hi_b))
+    n_params = len(p0)
+
+    # 파라미터 수에 따른 maxiter 자동 조정 (많을수록 줄임)
+    de_maxiter  = max(50,  300 - n_params * 15)   # 5arc=17→65, 3arc=11→135
+    da_maxiter  = max(500, 2000 - n_params * 80)
+    nfev_max    = max(5000, 30000 - n_params * 1000)
 
     def _trf(x0):
         r = least_squares(residuals_fn, x0=x0, bounds=(lo_b, hi_b),
                           args=(freq_arr, zr_arr, zi_arr, num_rc),
-                          method="trf", max_nfev=50000,
-                          ftol=1e-12, xtol=1e-12, gtol=1e-12)
+                          method="trf", max_nfev=nfev_max,
+                          ftol=1e-10, xtol=1e-10, gtol=1e-10)
         return r.x
 
     def _lm(x0):
         r = least_squares(residuals_fn, x0=x0,
                           args=(freq_arr, zr_arr, zi_arr, num_rc),
-                          method="lm", max_nfev=50000,
-                          ftol=1e-12, xtol=1e-12, gtol=1e-12)
+                          method="lm", max_nfev=nfev_max,
+                          ftol=1e-10, xtol=1e-10, gtol=1e-10)
         return r.x
 
     def _nelder(x0):
         r = minimize(chi2_fn, x0=x0,
                      args=(freq_arr, zr_arr, zi_arr, num_rc),
                      method="Nelder-Mead",
-                     options={"maxiter": 100000, "xatol": 1e-10, "fatol": 1e-10})
+                     options={"maxiter": 50000, "xatol": 1e-8, "fatol": 1e-8})
         return r.x
 
     def _lbfgsb(x0):
         r = minimize(chi2_fn, x0=x0, bounds=bounds_pairs,
                      args=(freq_arr, zr_arr, zi_arr, num_rc),
                      method="L-BFGS-B",
-                     options={"maxiter": 50000, "ftol": 1e-15, "gtol": 1e-10})
+                     options={"maxiter": 20000, "ftol": 1e-12, "gtol": 1e-8})
         return r.x
 
     def _de():
+        iters_done = [0]
+        def cb(xk, convergence=0):
+            iters_done[0] += 1
+            if progress_cb:
+                progress_cb(min(iters_done[0] / de_maxiter, 0.95))
         r = differential_evolution(chi2_fn, bounds=bounds_pairs,
                                    args=(freq_arr, zr_arr, zi_arr, num_rc),
-                                   maxiter=800, tol=1e-10, seed=42,
-                                   workers=1, polish=True)
+                                   maxiter=de_maxiter, tol=1e-8, seed=42,
+                                   workers=1, polish=True, callback=cb)
+        if progress_cb: progress_cb(1.0)
         return r.x
 
     def _da():
+        iters_done = [0]
+        def cb(x, f, ctx):
+            iters_done[0] += 1
+            if progress_cb:
+                progress_cb(min(iters_done[0] / da_maxiter, 0.95))
+            return False
         r = dual_annealing(chi2_fn, bounds=bounds_pairs,
                            args=(freq_arr, zr_arr, zi_arr, num_rc),
-                           maxiter=3000, seed=42,
+                           maxiter=da_maxiter, seed=42,
+                           callback=cb,
                            minimizer_kwargs={"method": "L-BFGS-B",
                                              "bounds": bounds_pairs})
+        if progress_cb: progress_cb(1.0)
         return r.x
 
     def _shgo():
         r = shgo(chi2_fn, bounds=bounds_pairs,
                  args=(freq_arr, zr_arr, zi_arr, num_rc),
-                 n=200, iters=3,
+                 n=100, iters=2,
                  minimizer_kwargs={"method": "L-BFGS-B"})
         return r.x
 
     if algo_key == "TRF":
-        return _trf(p0)
+        if progress_cb: progress_cb(0.5)
+        res = _trf(p0)
+        if progress_cb: progress_cb(1.0)
+        return res
     elif algo_key == "LM":
-        return _lm(p0)
+        if progress_cb: progress_cb(0.5)
+        res = _lm(p0)
+        if progress_cb: progress_cb(1.0)
+        return res
     elif algo_key == "Nelder-Mead":
-        return _nelder(p0)
+        if progress_cb: progress_cb(0.5)
+        res = _nelder(p0)
+        if progress_cb: progress_cb(1.0)
+        return res
     elif algo_key == "L-BFGS-B":
-        return _lbfgsb(p0)
+        if progress_cb: progress_cb(0.5)
+        res = _lbfgsb(p0)
+        if progress_cb: progress_cb(1.0)
+        return res
     elif algo_key == "DE":
         return _de()
     elif algo_key == "DA":
         return _da()
     elif algo_key == "SHGO":
-        return _shgo()
+        if progress_cb: progress_cb(0.3)
+        res = _shgo()
+        if progress_cb: progress_cb(1.0)
+        return res
     elif algo_key == "DE+TRF":
         x_de = _de()
-        return _trf(x_de)
+        if progress_cb: progress_cb(0.97)
+        res = _trf(x_de)
+        if progress_cb: progress_cb(1.0)
+        return res
     elif algo_key == "DA+TRF":
         x_da = _da()
-        return _trf(x_da)
+        if progress_cb: progress_cb(0.97)
+        res = _trf(x_da)
+        if progress_cb: progress_cb(1.0)
+        return res
     else:
-        return _trf(p0)
+        if progress_cb: progress_cb(0.5)
+        res = _trf(p0)
+        if progress_cb: progress_cb(1.0)
+        return res
 
 
 def eis_fitting_tab():
@@ -574,8 +622,16 @@ def eis_fitting_tab():
                     p0 = [max(lo, min(hi, v)) for v, lo, hi in zip(p0, lo_b, hi_b)]
 
                 try:
+                        # 로딩바
+                        progress_bar = st.progress(0, text=f"⏳ {sel_algo_label} 실행 중...")
+
+                        def _update_progress(v):
+                            pct = int(v * 100)
+                            progress_bar.progress(pct, text=f"⏳ {sel_algo_label} 실행 중... {pct}%")
+
                         popt = run_fitting(sel_algo_key, p0, lo_b, hi_b,
-                                           freq_arr, zr_arr, zi_arr, num_rc)
+                                           freq_arr, zr_arr, zi_arr, num_rc,
+                                           progress_cb=_update_progress)
 
                         Z_fit_full = circuit_impedance(df["Freq"].values, popt, num_rc)
                         chi2     = chi2_fn(popt, freq_arr, zr_arr, zi_arr, num_rc)
@@ -596,6 +652,7 @@ def eis_fitting_tab():
                             "fit_fit_algo": sel_algo_label,
                             "fit_fit_filename": uploaded_fit.name,
                         })
+                        progress_bar.progress(100, text="✅ 완료!")
                         status_placeholder.empty()
                         st.rerun()
 
