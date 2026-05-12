@@ -770,7 +770,6 @@ def eis_fitting_tab():
                         })
                         progress_placeholder.progress(100, text="✅ 완료!")
                         status_placeholder.empty()
-                        st.rerun()
 
                 except Exception as e:
                         status_placeholder.empty()
