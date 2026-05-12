@@ -483,22 +483,95 @@ def eis_fitting_tab():
         # 로딩바: 버튼 바로 아래 (카드 닫기 전)
         progress_placeholder = st.empty()
 
+        # ── 파라미터 입력 ─────────────────────────────────────────────────────────
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### 🔧 파라미터 설정")
+
+        hc0, hc1, hc2, hc3 = st.columns([1.5, 1, 1, 1])
+        for hc, txt in zip([hc1, hc2, hc3], ["초기값", "하한", "상한"]):
+            hc.markdown(f'<p style="font-size:0.70rem;color:#aaa;text-align:center;margin:0">{txt}</p>',
+                        unsafe_allow_html=True)
+
+        p0, lo_b, hi_b = [], [], []
+
+        # Rs 초기값: Z''이 양→음으로 바뀌는 교차점의 Z' (내삽)
+        _zr = df["Zr"].values
+        _zi = df["Zi"].values
+        _rs_default = 0.30  # fallback
+        for _k in range(len(_zi) - 1):
+            if _zi[_k] > 0 and _zi[_k+1] <= 0:
+                _t = _zi[_k] / (_zi[_k] - _zi[_k+1])
+                _rs_default = float(_zr[_k] + _t * (_zr[_k+1] - _zr[_k]))
+                break
+
+        st.markdown('<p class="group-title">인덕턴스 &amp; 직렬 저항</p>', unsafe_allow_html=True)
+
+        # L
+        st.markdown('<p class="param-label">L [H] — 인덕턴스</p>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        v0_L  = c1.number_input("v", value=1e-7, format="%.2e", key="p0_L",  label_visibility="collapsed")
+        vlo_L = c2.number_input("l", value=1e-12, format="%.2e", key="lo_L", label_visibility="collapsed")
+        vhi_L = c3.number_input("h", value=1e-3,  format="%.2e", key="hi_L", label_visibility="collapsed")
+        p0.append(v0_L); lo_b.append(vlo_L); hi_b.append(vhi_L)
+
+        # Rs — 파일명 기반 key로 session_state 캐시 우회
+        _fname_key = uploaded_fit.name.replace(".", "_").replace(" ", "_")
+        st.markdown('<p class="param-label">Rs [Ω] — 직렬 저항</p>', unsafe_allow_html=True)
+        st.caption(f"🔍 자동 추정 Rs ≈ {_rs_default:.4f} Ω (Z\'\' 부호 교차점)")
+
+        rs_fix_col, rs_val_col = st.columns([1, 2])
+        rs_fixed = rs_fix_col.toggle("Rs 고정", value=True, key=f"rs_fixed_{_fname_key}",
+                                     help="ON: Rs를 고정값으로 피팅 (하한=상한=고정값)")
+        rs_fixed_val = rs_val_col.number_input(
+            "Rs 고정값 (Ω)", value=_rs_default, format="%.4f",
+            key=f"rs_fixval_{_fname_key}", label_visibility="collapsed"
+        )
+
+        # 초기값/하한/상한 항상 표시 (ON이면 하한=상한=고정값으로 override)
+        c1, c2, c3 = st.columns(3)
+        v0_Rs  = c1.number_input("v", value=_rs_default, format="%.4f",
+                                 key=f"p0_Rs_{_fname_key}", label_visibility="collapsed")
+        vlo_Rs = c2.number_input("l", value=1e-4, format="%.2e",
+                                 key=f"lo_Rs_{_fname_key}", label_visibility="collapsed")
+        vhi_Rs = c3.number_input("h", value=10.0, format="%.2e",
+                                 key=f"hi_Rs_{_fname_key}", label_visibility="collapsed")
+
+        if rs_fixed:
+            v0_Rs  = rs_fixed_val
+            vlo_Rs = rs_fixed_val * 0.9999
+            vhi_Rs = rs_fixed_val * 1.0001
+            st.caption(f"🔒 Rs = {rs_fixed_val:.4f} Ω 고정")
+        p0.append(v0_Rs); lo_b.append(vlo_Rs); hi_b.append(vhi_Rs)
+
+        R_defs = [0.02, 0.10, 0.30, 0.50, 1.00]
+        Q_defs = [1e-3, 5e-3, 1e-2, 2e-2, 5e-2]
+        n_defs = [0.80, 0.75, 0.60, 0.65, 0.70]
+
+        for i in range(1, num_rc + 1):
+            st.markdown(f'<hr><p class="group-title">아크 {i} — R{i}‖CPE{i}</p>', unsafe_allow_html=True)
+            for sym, name, unit, default, lo, hi in [
+                (f"R{i}", f"저항 {i}",      "Ω",    R_defs[i-1], 1e-4, 100.0),
+                (f"Q{i}", f"CPE{i} 계수",   "S·sⁿ", Q_defs[i-1], 1e-9, 10.0 ),
+                (f"n{i}", f"CPE{i} 지수",   "",     n_defs[i-1], 0.01, 1.00 ),
+            ]:
+                tag = f"{sym} [{unit}]" if unit else sym
+                st.markdown(f'<p class="param-label">{tag} — {name}</p>', unsafe_allow_html=True)
+                c1, c2, c3 = st.columns(3)
+                v0  = c1.number_input("v", value=default, format="%.2e", key=f"p0_{sym}", label_visibility="collapsed")
+                vlo = c2.number_input("l", value=lo,      format="%.2e", key=f"lo_{sym}", label_visibility="collapsed")
+                vhi = c3.number_input("h", value=hi,      format="%.2e", key=f"hi_{sym}", label_visibility="collapsed")
+                p0.append(v0); lo_b.append(vlo); hi_b.append(vhi)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
         # ── 결과 (파라미터 위에 표시) ───────────────────────────────────────────────
         if run_btn:
-            # p0/lo_b/hi_b는 session_state에 저장된 이전 값 사용
-            # (파라미터 카드가 아직 렌더링 안 됐으므로)
-            p0   = st.session_state.get("fit_p0_cache",   [])
-            lo_b = st.session_state.get("fit_lo_b_cache", [])
-            hi_b = st.session_state.get("fit_hi_b_cache", [])
-
             freq_arr = df_fit["Freq"].values
             zr_arr   = df_fit["Zr"].values
             zi_arr   = df_fit["Zi"].values
             n_params = 2 + num_rc * 3
 
-            if not p0 or len(p0) != n_params:
-                st.warning("⚠️ 파라미터를 먼저 설정하고 다시 실행해 주세요.")
-            elif len(freq_arr) < n_params:
+            if len(freq_arr) < n_params:
                 st.error(f"데이터 포인트({len(freq_arr)})가 파라미터 수({n_params})보다 적습니다.")
             else:
                 p0 = list(p0)  # mutable copy
@@ -696,87 +769,6 @@ def eis_fitting_tab():
                                data=buf.getvalue().encode("utf-8-sig"),
                                file_name=f"EIS_fit_{fn}.csv", mime="text/csv")
             st.markdown('</div>', unsafe_allow_html=True)
-
-        # ── 파라미터 입력 ─────────────────────────────────────────────────────────
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown("### 🔧 파라미터 설정")
-
-        hc0, hc1, hc2, hc3 = st.columns([1.5, 1, 1, 1])
-        for hc, txt in zip([hc1, hc2, hc3], ["초기값", "하한", "상한"]):
-            hc.markdown(f'<p style="font-size:0.70rem;color:#aaa;text-align:center;margin:0">{txt}</p>',
-                        unsafe_allow_html=True)
-
-        p0, lo_b, hi_b = [], [], []
-
-        # Rs 초기값: Z''이 양→음으로 바뀌는 교차점의 Z' (내삽)
-        _zr = df["Zr"].values
-        _zi = df["Zi"].values
-        _rs_default = 0.30  # fallback
-        for _k in range(len(_zi) - 1):
-            if _zi[_k] > 0 and _zi[_k+1] <= 0:
-                _t = _zi[_k] / (_zi[_k] - _zi[_k+1])
-                _rs_default = float(_zr[_k] + _t * (_zr[_k+1] - _zr[_k]))
-                break
-
-        st.markdown('<p class="group-title">인덕턴스 &amp; 직렬 저항</p>', unsafe_allow_html=True)
-
-        # L
-        st.markdown('<p class="param-label">L [H] — 인덕턴스</p>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
-        v0_L  = c1.number_input("v", value=1e-7, format="%.2e", key="p0_L",  label_visibility="collapsed")
-        vlo_L = c2.number_input("l", value=1e-12, format="%.2e", key="lo_L", label_visibility="collapsed")
-        vhi_L = c3.number_input("h", value=1e-3,  format="%.2e", key="hi_L", label_visibility="collapsed")
-        p0.append(v0_L); lo_b.append(vlo_L); hi_b.append(vhi_L)
-
-        # Rs — 파일명 기반 key로 session_state 캐시 우회
-        _fname_key = uploaded_fit.name.replace(".", "_").replace(" ", "_")
-        st.markdown('<p class="param-label">Rs [Ω] — 직렬 저항</p>', unsafe_allow_html=True)
-        st.caption(f"🔍 자동 추정 Rs ≈ {_rs_default:.4f} Ω (Z\'\' 부호 교차점)")
-
-        rs_fix_col, rs_val_col = st.columns([1, 2])
-        rs_fixed = rs_fix_col.toggle("Rs 고정", value=True, key=f"rs_fixed_{_fname_key}",
-                                     help="ON: Rs를 고정값으로 피팅 (하한=상한=고정값)")
-        rs_fixed_val = rs_val_col.number_input(
-            "Rs 고정값 (Ω)", value=_rs_default, format="%.4f",
-            key=f"rs_fixval_{_fname_key}", label_visibility="collapsed"
-        )
-
-        # 초기값/하한/상한 항상 표시 (ON이면 하한=상한=고정값으로 override)
-        c1, c2, c3 = st.columns(3)
-        v0_Rs  = c1.number_input("v", value=_rs_default, format="%.4f",
-                                 key=f"p0_Rs_{_fname_key}", label_visibility="collapsed")
-        vlo_Rs = c2.number_input("l", value=1e-4, format="%.2e",
-                                 key=f"lo_Rs_{_fname_key}", label_visibility="collapsed")
-        vhi_Rs = c3.number_input("h", value=10.0, format="%.2e",
-                                 key=f"hi_Rs_{_fname_key}", label_visibility="collapsed")
-
-        if rs_fixed:
-            v0_Rs  = rs_fixed_val
-            vlo_Rs = rs_fixed_val * 0.9999
-            vhi_Rs = rs_fixed_val * 1.0001
-            st.caption(f"🔒 Rs = {rs_fixed_val:.4f} Ω 고정")
-        p0.append(v0_Rs); lo_b.append(vlo_Rs); hi_b.append(vhi_Rs)
-
-        R_defs = [0.02, 0.10, 0.30, 0.50, 1.00]
-        Q_defs = [1e-3, 5e-3, 1e-2, 2e-2, 5e-2]
-        n_defs = [0.80, 0.75, 0.60, 0.65, 0.70]
-
-        for i in range(1, num_rc + 1):
-            st.markdown(f'<hr><p class="group-title">아크 {i} — R{i}‖CPE{i}</p>', unsafe_allow_html=True)
-            for sym, name, unit, default, lo, hi in [
-                (f"R{i}", f"저항 {i}",      "Ω",    R_defs[i-1], 1e-4, 100.0),
-                (f"Q{i}", f"CPE{i} 계수",   "S·sⁿ", Q_defs[i-1], 1e-9, 10.0 ),
-                (f"n{i}", f"CPE{i} 지수",   "",     n_defs[i-1], 0.01, 1.00 ),
-            ]:
-                tag = f"{sym} [{unit}]" if unit else sym
-                st.markdown(f'<p class="param-label">{tag} — {name}</p>', unsafe_allow_html=True)
-                c1, c2, c3 = st.columns(3)
-                v0  = c1.number_input("v", value=default, format="%.2e", key=f"p0_{sym}", label_visibility="collapsed")
-                vlo = c2.number_input("l", value=lo,      format="%.2e", key=f"lo_{sym}", label_visibility="collapsed")
-                vhi = c3.number_input("h", value=hi,      format="%.2e", key=f"hi_{sym}", label_visibility="collapsed")
-                p0.append(v0); lo_b.append(vlo); hi_b.append(vhi)
-
-        st.markdown('</div>', unsafe_allow_html=True)
 
 
 
