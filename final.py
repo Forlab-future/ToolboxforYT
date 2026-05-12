@@ -635,17 +635,24 @@ def eis_fitting_tab():
                 break
 
         st.markdown('<p class="group-title">인덕턴스 &amp; 직렬 저항</p>', unsafe_allow_html=True)
-        for sym, name, unit, default, lo, hi in [
-            ("L",  "인덕턴스",  "H",   1e-7,       1e-12, 1e-3),
-            ("Rs", "직렬 저항", "Ω",   _rs_default, 1e-4,  10.0),
-        ]:
-            tag = f"{sym} [{unit}]"
-            st.markdown(f'<p class="param-label">{tag} — {name}</p>', unsafe_allow_html=True)
-            c1, c2, c3 = st.columns(3)
-            v0  = c1.number_input("v", value=default, format="%.4f", key=f"p0_{sym}", label_visibility="collapsed")
-            vlo = c2.number_input("l", value=lo,      format="%.2e", key=f"lo_{sym}", label_visibility="collapsed")
-            vhi = c3.number_input("h", value=hi,      format="%.2e", key=f"hi_{sym}", label_visibility="collapsed")
-            p0.append(v0); lo_b.append(vlo); hi_b.append(vhi)
+
+        # L
+        st.markdown('<p class="param-label">L [H] — 인덕턴스</p>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        v0_L  = c1.number_input("v", value=1e-7, format="%.2e", key="p0_L",  label_visibility="collapsed")
+        vlo_L = c2.number_input("l", value=1e-12, format="%.2e", key="lo_L", label_visibility="collapsed")
+        vhi_L = c3.number_input("h", value=1e-3,  format="%.2e", key="hi_L", label_visibility="collapsed")
+        p0.append(v0_L); lo_b.append(vlo_L); hi_b.append(vhi_L)
+
+        # Rs — 파일명 기반 key로 session_state 캐시 우회
+        _fname_key = uploaded_fit.name.replace(".", "_").replace(" ", "_")
+        st.markdown('<p class="param-label">Rs [Ω] — 직렬 저항</p>', unsafe_allow_html=True)
+        st.caption(f"🔍 자동 추정 Rs ≈ {_rs_default:.4f} Ω (Z\'\' 부호 교차점)")
+        c1, c2, c3 = st.columns(3)
+        v0_Rs  = c1.number_input("v", value=_rs_default, format="%.4f", key=f"p0_Rs_{_fname_key}", label_visibility="collapsed")
+        vlo_Rs = c2.number_input("l", value=1e-4,        format="%.2e", key=f"lo_Rs_{_fname_key}", label_visibility="collapsed")
+        vhi_Rs = c3.number_input("h", value=10.0,        format="%.2e", key=f"hi_Rs_{_fname_key}", label_visibility="collapsed")
+        p0.append(v0_Rs); lo_b.append(vlo_Rs); hi_b.append(vhi_Rs)
 
         R_defs = [0.02, 0.10, 0.30, 0.50, 1.00]
         Q_defs = [1e-3, 5e-3, 1e-2, 2e-2, 5e-2]
