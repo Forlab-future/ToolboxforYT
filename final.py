@@ -624,15 +624,25 @@ def eis_fitting_tab():
 
         p0, lo_b, hi_b = [], [], []
 
+        # Rs 초기값: Z''이 양→음으로 바뀌는 교차점의 Z' (내삽)
+        _zr = df["Zr"].values
+        _zi = df["Zi"].values
+        _rs_default = 0.30  # fallback
+        for _k in range(len(_zi) - 1):
+            if _zi[_k] > 0 and _zi[_k+1] <= 0:
+                _t = _zi[_k] / (_zi[_k] - _zi[_k+1])
+                _rs_default = float(_zr[_k] + _t * (_zr[_k+1] - _zr[_k]))
+                break
+
         st.markdown('<p class="group-title">인덕턴스 &amp; 직렬 저항</p>', unsafe_allow_html=True)
         for sym, name, unit, default, lo, hi in [
-            ("L",  "인덕턴스",  "H", 1e-7, 1e-12, 1e-3),
-            ("Rs", "직렬 저항", "Ω", 0.30, 1e-4,  10.0),
+            ("L",  "인덕턴스",  "H",   1e-7,       1e-12, 1e-3),
+            ("Rs", "직렬 저항", "Ω",   _rs_default, 1e-4,  10.0),
         ]:
             tag = f"{sym} [{unit}]"
             st.markdown(f'<p class="param-label">{tag} — {name}</p>', unsafe_allow_html=True)
             c1, c2, c3 = st.columns(3)
-            v0  = c1.number_input("v", value=default, format="%.2e", key=f"p0_{sym}", label_visibility="collapsed")
+            v0  = c1.number_input("v", value=default, format="%.4f", key=f"p0_{sym}", label_visibility="collapsed")
             vlo = c2.number_input("l", value=lo,      format="%.2e", key=f"lo_{sym}", label_visibility="collapsed")
             vhi = c3.number_input("h", value=hi,      format="%.2e", key=f"hi_{sym}", label_visibility="collapsed")
             p0.append(v0); lo_b.append(vlo); hi_b.append(vhi)
