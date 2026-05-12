@@ -371,21 +371,22 @@ def eis_fitting_tab():
             freq_all = df["Freq"].values
             omega_all = 2 * np.pi * freq_all
             arc_colors = ["#2ca02c","#d62728","#9467bd","#8c564b","#e377c2"]
-            Rs_val = popt_graph[1]   # Rs: 직렬 저항 오프셋
-            # 각 아크의 시작 오프셋 = Rs + 이전 아크들의 실수부 중심
-            z_offset = Rs_val + 0j
+            Rs_val = popt_graph[1]
+            # 각 아크를 독립적으로 계산하고, 나이키스트 x 오프셋은 별도 관리
+            # 아크 i의 x_offset = Rs + R1 + R2 + ... + R(i-1)
+            x_offset = Rs_val
             for i in range(num_rc_graph):
                 base = 2 + i * 3
                 R_i = popt_graph[base]
                 Q_i = popt_graph[base+1]
                 n_i = popt_graph[base+2]
+                # 아크만 단독 계산 (0 기준)
                 Z_arc_only = z_parallel_cpe(R_i, Q_i, n_i, omega_all)
-                # 이 아크의 실제 위치 = 이전 누적 오프셋 + 이 아크 임피던스
-                Z_arc = z_offset + Z_arc_only
+                # x_offset은 나이키스트 플랏 시 실수부에 더함 (허수부는 그대로)
                 arc_Z_list.append((f"아크 {i+1} (R{i+1}‖CPE{i+1})",
-                                   arc_colors[i % len(arc_colors)], Z_arc))
-                # 다음 아크 시작점 = 현재 아크의 DC 저항(ω→0, R_i)만큼 이동
-                z_offset += R_i
+                                   arc_colors[i % len(arc_colors)],
+                                   Z_arc_only, x_offset))
+                x_offset += R_i
 
         # ── 축 범위 설정 (나이키스트 + 보데 공통) ────────────────────────────
         with st.expander("⚙️ 축 범위 설정", expanded=False):
@@ -405,16 +406,14 @@ def eis_fitting_tab():
         # ── 나이키스트 + 보데 나란히 ─────────────────────────────────────────
         g_ny, g_bo = st.columns(2)
 
-        # 나이키스트용: 주파수 내림차순(고→저) 정렬해서 호 방향 일치
+        # 주파수 순서 그대로 사용 (파일이 이미 고주파→저주파 순)
         freq_vals = df["Freq"].values
-        sort_idx  = np.argsort(freq_vals)[::-1]   # 고주파 → 저주파
 
         with g_ny:
             fig_ny = plot_nyquist(df, Z_fit_full, ny_xmin, ny_xmax, ny_ymin, ny_ymax)
-            for label, color, Z_arc in arc_Z_list:
-                Z_sorted = Z_arc[sort_idx]
+            for label, color, Z_arc, x_off in arc_Z_list:
                 fig_ny.add_trace(go.Scatter(
-                    x=Z_sorted.real, y=-Z_sorted.imag,
+                    x=Z_arc.real + x_off, y=-Z_arc.imag,
                     mode="lines", name=label,
                     line=dict(color=color, width=1.5, dash="dot"),
                 ))
@@ -422,7 +421,7 @@ def eis_fitting_tab():
 
         with g_bo:
             fig_bo = plot_bode(df, Z_fit_full, bo_fmin, bo_fmax, bo_ymin, bo_ymax)
-            for label, color, Z_arc in arc_Z_list:
+            for label, color, Z_arc, x_off in arc_Z_list:
                 fig_bo.add_trace(go.Scatter(
                     x=freq_vals, y=-Z_arc.imag,
                     mode="lines", name=label,
