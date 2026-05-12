@@ -371,14 +371,21 @@ def eis_fitting_tab():
             freq_all = df["Freq"].values
             omega_all = 2 * np.pi * freq_all
             arc_colors = ["#2ca02c","#d62728","#9467bd","#8c564b","#e377c2"]
+            Rs_val = popt_graph[1]   # Rs: 직렬 저항 오프셋
+            # 각 아크의 시작 오프셋 = Rs + 이전 아크들의 실수부 중심
+            z_offset = Rs_val + 0j
             for i in range(num_rc_graph):
                 base = 2 + i * 3
                 R_i = popt_graph[base]
                 Q_i = popt_graph[base+1]
                 n_i = popt_graph[base+2]
-                Z_arc = z_parallel_cpe(R_i, Q_i, n_i, omega_all)
+                Z_arc_only = z_parallel_cpe(R_i, Q_i, n_i, omega_all)
+                # 이 아크의 실제 위치 = 이전 누적 오프셋 + 이 아크 임피던스
+                Z_arc = z_offset + Z_arc_only
                 arc_Z_list.append((f"아크 {i+1} (R{i+1}‖CPE{i+1})",
                                    arc_colors[i % len(arc_colors)], Z_arc))
+                # 다음 아크 시작점 = 현재 아크의 DC 저항(ω→0, R_i)만큼 이동
+                z_offset += R_i
 
         # ── 축 범위 설정 (나이키스트 + 보데 공통) ────────────────────────────
         with st.expander("⚙️ 축 범위 설정", expanded=False):
