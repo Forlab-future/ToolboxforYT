@@ -648,10 +648,30 @@ def eis_fitting_tab():
         _fname_key = uploaded_fit.name.replace(".", "_").replace(" ", "_")
         st.markdown('<p class="param-label">Rs [Ω] — 직렬 저항</p>', unsafe_allow_html=True)
         st.caption(f"🔍 자동 추정 Rs ≈ {_rs_default:.4f} Ω (Z\'\' 부호 교차점)")
-        c1, c2, c3 = st.columns(3)
-        v0_Rs  = c1.number_input("v", value=_rs_default, format="%.4f", key=f"p0_Rs_{_fname_key}", label_visibility="collapsed")
-        vlo_Rs = c2.number_input("l", value=1e-4,        format="%.2e", key=f"lo_Rs_{_fname_key}", label_visibility="collapsed")
-        vhi_Rs = c3.number_input("h", value=10.0,        format="%.2e", key=f"hi_Rs_{_fname_key}", label_visibility="collapsed")
+
+        rs_fix_col, rs_val_col = st.columns([1, 2])
+        rs_fixed = rs_fix_col.toggle("Rs 고정", value=False, key=f"rs_fixed_{_fname_key}",
+                                     help="ON: Rs를 고정값으로 피팅 (하한=상한=고정값)")
+        rs_fixed_val = rs_val_col.number_input(
+            "Rs 고정값 (Ω)", value=_rs_default, format="%.4f",
+            key=f"rs_fixval_{_fname_key}", label_visibility="collapsed",
+            disabled=not rs_fixed
+        )
+
+        if rs_fixed:
+            # 고정: 하한=상한=고정값 → 피팅 중 변하지 않음
+            v0_Rs  = rs_fixed_val
+            vlo_Rs = rs_fixed_val * 0.9999
+            vhi_Rs = rs_fixed_val * 1.0001
+            st.caption(f"🔒 Rs = {rs_fixed_val:.4f} Ω 고정")
+        else:
+            c1, c2, c3 = st.columns(3)
+            v0_Rs  = c1.number_input("v", value=_rs_default, format="%.4f",
+                                     key=f"p0_Rs_{_fname_key}", label_visibility="collapsed")
+            vlo_Rs = c2.number_input("l", value=1e-4, format="%.2e",
+                                     key=f"lo_Rs_{_fname_key}", label_visibility="collapsed")
+            vhi_Rs = c3.number_input("h", value=10.0, format="%.2e",
+                                     key=f"hi_Rs_{_fname_key}", label_visibility="collapsed")
         p0.append(v0_Rs); lo_b.append(vlo_Rs); hi_b.append(vhi_Rs)
 
         R_defs = [0.02, 0.10, 0.30, 0.50, 1.00]
