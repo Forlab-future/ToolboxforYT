@@ -47,22 +47,62 @@ def fmt_val(v):
 # 파서
 # ══════════════════════════════════════════════════════════════════════════════
 def parse_z_file_fit(uploaded_file):
-    content = uploaded_file.getvalue().decode("utf-8", errors="ignore").splitlines()
+    raw = uploaded_file.getvalue()
+    # 여러 인코딩 시도
+    for enc in ("utf-8", "latin-1", "cp1252"):
+        try:
+            text = raw.decode(enc, errors="ignore")
+            break
+        except Exception:
+            continue
+
+    lines = text.splitlines()
     data_start = None
-    for idx, line in enumerate(content):
+
+    # 방법 1: "End Comments" 키워드
+    for idx, line in enumerate(lines):
         if "End Comments" in line:
             data_start = idx + 1
             break
+
+    # 방법 2: 첫 번째 숫자 데이터 행 자동 탐지
+    if data_start is None:
+        for idx, line in enumerate(lines):
+            parts = re.split(r'\s+', line.strip())
+            if len(parts) >= 5:
+                try:
+                    float(parts[0]); float(parts[1])
+                    # 첫 컬럼이 주파수 범위(0.01~1e6)인지 확인
+                    if 0.001 <= float(parts[0]) <= 1e7:
+                        data_start = idx
+                        break
+                except ValueError:
+                    continue
+
     if data_start is None:
         return None
+
     rows = []
-    for line in content[data_start:]:
+    for line in lines[data_start:]:
         parts = re.split(r'\s+', line.strip())
-        if len(parts) >= 6:
-            try:
-                rows.append((float(parts[0]), float(parts[4]), float(parts[5])))
-            except ValueError:
+        if len(parts) < 5:
+            continue
+        try:
+            freq = float(parts[0])
+            # Z'(a)와 Z''(b) 위치 탐색: 4번째(인덱스4)가 기본, 없으면 2,3번 시도
+            if len(parts) >= 6:
+                zr = float(parts[4])
+                zi = float(parts[5])
+            elif len(parts) >= 4:
+                zr = float(parts[2])
+                zi = float(parts[3])
+            else:
                 continue
+            if 0.001 <= freq <= 1e7:  # 유효 주파수 범위
+                rows.append((freq, zr, zi))
+        except ValueError:
+            continue
+
     if not rows:
         return None
     return pd.DataFrame(rows, columns=["Freq", "Zr", "Zi"])
