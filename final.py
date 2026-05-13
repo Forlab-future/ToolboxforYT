@@ -249,7 +249,34 @@ def plot_bode(df, Z_fit=None, fmin=0.1, fmax=100000.0, ymin=0.0, ymax=0.0):
 # ══════════════════════════════════════════════════════════════════════════════
 # 피팅 실행 함수
 # ══════════════════════════════════════════════════════════════════════════════
-def run_fitting(algo_key, p0, lo_b, hi_b, freq_arr, zr_arr, zi_arr, num_rc, progress_cb=None):
+
+def circuit_impedance_flex(freq, params, num_rc, no_L=False):
+    """L 포함/제외 선택 가능한 회로 임피던스"""
+    omega = 2 * np.pi * np.array(freq, dtype=float)
+    if no_L:
+        Rs = params[0]
+        Z = np.full_like(omega, Rs, dtype=complex)
+        base_offset = 1
+    else:
+        L, Rs = params[0], params[1]
+        Z = 1j * omega * L + Rs
+        base_offset = 2
+    for i in range(num_rc):
+        b = base_offset + i * 3
+        Z += z_parallel_cpe(params[b], params[b+1], params[b+2], omega)
+    return Z
+
+def chi2_fn_flex(params, freq, zr, zi, num_rc, no_L=False):
+    try:
+        Z = circuit_impedance_flex(freq, params, num_rc, no_L)
+        w = 1.0 / (zr**2 + zi**2 + 1e-12)
+        r = np.concatenate([(Z.real-zr)*np.sqrt(w), (Z.imag-zi)*np.sqrt(w)])
+        return float(np.sum(r**2))
+    except Exception:
+        return 1e10
+
+
+def run_fitting(algo_key, p0, lo_b, hi_b, freq_arr, zr_arr, zi_arr, num_rc, progress_cb=None, no_L=False):
     """
     파라미터 수가 많을수록 maxiter를 줄여 무한 대기 방지.
     progress_cb: 진행률(0~1)을 받는 콜백 함수 (선택)
@@ -262,8 +289,14 @@ def run_fitting(algo_key, p0, lo_b, hi_b, freq_arr, zr_arr, zi_arr, num_rc, prog
     da_maxiter  = max(500, 2000 - n_params * 80)
     nfev_max    = max(5000, 30000 - n_params * 1000)
 
+    _residuals = lambda p, f, zr, zi, n: (
+        residuals_fn(p, f, zr, zi, n) if not no_L else
+        np.concatenate([(circuit_impedance_flex(f,p,n,True).real-zr)/np.sqrt(zr**2+zi**2+1e-12),
+                        (circuit_impedance_flex(f,p,n,True).imag-zi)/np.sqrt(zr**2+zi**2+1e-12)])
+    )
+
     def _trf(x0):
-        r = least_squares(residuals_fn, x0=x0, bounds=(lo_b, hi_b),
+        r = least_squares(_residuals, x0=x0, bounds=(lo_b, hi_b),
                           args=(freq_arr, zr_arr, zi_arr, num_rc),
                           method="trf", max_nfev=nfev_max,
                           ftol=1e-10, xtol=1e-10, gtol=1e-10)
@@ -277,18 +310,20 @@ def run_fitting(algo_key, p0, lo_b, hi_b, freq_arr, zr_arr, zi_arr, num_rc, prog
         return r.x
 
     def _nelder(x0):
-        r = minimize(chi2_fn, x0=x0,
+        r = minimize(_chi2, x0=x0,
                      args=(freq_arr, zr_arr, zi_arr, num_rc),
                      method="Nelder-Mead",
                      options={"maxiter": 50000, "xatol": 1e-8, "fatol": 1e-8})
         return r.x
 
     def _lbfgsb(x0):
-        r = minimize(chi2_fn, x0=x0, bounds=bounds_pairs,
+        r = minimize(_chi2, x0=x0, bounds=bounds_pairs,
                      args=(freq_arr, zr_arr, zi_arr, num_rc),
                      method="L-BFGS-B",
                      options={"maxiter": 20000, "ftol": 1e-12, "gtol": 1e-8})
         return r.x
+
+    _chi2 = lambda p, f, zr, zi, n: chi2_fn_flex(p, f, zr, zi, n, no_L)
 
     def _de():
         iters_done = [0]
@@ -296,7 +331,7 @@ def run_fitting(algo_key, p0, lo_b, hi_b, freq_arr, zr_arr, zi_arr, num_rc, prog
             iters_done[0] += 1
             if progress_cb:
                 progress_cb(min(iters_done[0] / de_maxiter, 0.95))
-        r = differential_evolution(chi2_fn, bounds=bounds_pairs,
+        r = differential_evolution(_chi2, bounds=bounds_pairs,
                                    args=(freq_arr, zr_arr, zi_arr, num_rc),
                                    maxiter=de_maxiter, tol=1e-8, seed=42,
                                    workers=1, polish=True, callback=cb)
@@ -320,7 +355,7 @@ def run_fitting(algo_key, p0, lo_b, hi_b, freq_arr, zr_arr, zi_arr, num_rc, prog
         return r.x
 
     def _shgo():
-        r = shgo(chi2_fn, bounds=bounds_pairs,
+        r = shgo(_chi2, bounds=bounds_pairs,
                  args=(freq_arr, zr_arr, zi_arr, num_rc),
                  n=100, iters=2,
                  minimizer_kwargs={"method": "L-BFGS-B"})
@@ -402,21 +437,25 @@ def eis_fitting_tab():
     # ── 왼쪽: 그래프 ──────────────────────────────────────────────────────────────
     with col_L:
         Z_fit_full  = st.session_state.get("fit_Z_fit_full", None)
+        no_inductance_saved = st.session_state.get("fit_no_inductance_saved", False)
         popt_graph  = st.session_state.get("fit_popt", None)
         num_rc_graph = (len(popt_graph) - 2) // 3 if popt_graph is not None else 0
 
         # 아크별 임피던스 계산
         arc_Z_list = []  # [(label, color, Z_arc_array), ...]
+        no_inductance = st.session_state.get("fit_no_inductance", False)
         if popt_graph is not None:
             freq_all = df["Freq"].values
             omega_all = 2 * np.pi * freq_all
             arc_colors = ["#2ca02c","#d62728","#9467bd","#8c564b","#e377c2"]
-            Rs_val = popt_graph[1]
+            _base_off = 0 if no_inductance else 1
+            Rs_val = popt_graph[_base_off]
             # 각 아크를 독립적으로 계산하고, 나이키스트 x 오프셋은 별도 관리
             # 아크 i의 x_offset = Rs + R1 + R2 + ... + R(i-1)
             x_offset = Rs_val
+            _arc_base = 1 if no_inductance else 2
             for i in range(num_rc_graph):
-                base = 2 + i * 3
+                base = _arc_base + i * 3
                 R_i = popt_graph[base]
                 Q_i = popt_graph[base+1]
                 n_i = popt_graph[base+2]
@@ -476,16 +515,48 @@ def eis_fitting_tab():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("### ⚡ 회로 구성")
         num_rc = st.slider("R+CPE 병렬 조합 개수", 1, 5, 3, key="fit_num_rc")
-        circuit_str = "L — Rs — " + " — ".join([f"(R{i}‖CPE{i})" for i in range(1, num_rc+1)])
+        no_inductance = st.toggle(
+            "🚫 인덕턴스 없음 (Rs — R‖CPE ...)",
+            value=False, key="fit_no_inductance",
+            help="ON: L 제거, 최대 주파수를 Z\'\' 부호 교차점 이하로 자동 제한"
+        )
+        if no_inductance:
+            circuit_str = "Rs — " + " — ".join([f"(R{i}‖CPE{i})" for i in range(1, num_rc+1)])
+        else:
+            circuit_str = "L — Rs — " + " — ".join([f"(R{i}‖CPE{i})" for i in range(1, num_rc+1)])
         st.markdown(f'<div class="circuit-box">{circuit_str}</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
         # ── 주파수 범위 ──────────────────────────────────────────────────────────
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("### 📡 피팅 주파수 범위")
+
+        # 인덕턴스 없음 모드: 최대 주파수를 Rs 교차점 이하로 제한
+        _zi_all = df["Zi"].values
+        _freq_all = df["Freq"].values
+        _rs_cross_freq = float(df["Freq"].max())  # fallback
+        for _k in range(len(_zi_all) - 1):
+            if _zi_all[_k] > 0 and _zi_all[_k+1] <= 0:
+                # Z\'\' 양→음 교차 주파수 (유도성 끝점)
+                _t = _zi_all[_k] / (_zi_all[_k] - _zi_all[_k+1])
+                _rs_cross_freq = float(_freq_all[_k] + _t * (_freq_all[_k+1] - _freq_all[_k]))
+                break
+
         fc1, fc2 = st.columns(2)
         f_lo = fc1.number_input("최소 (Hz)", value=float(df["Freq"].min()), format="%.4g", key="fit_fit_flo")
-        f_hi = fc2.number_input("최대 (Hz)", value=float(df["Freq"].max()), format="%.4g", key="fit_fit_fhi")
+
+        if no_inductance:
+            # 최대값은 교차 주파수로 고정, 더 늘리지 못하게 max_value 설정
+            f_hi_default = min(float(df["Freq"].max()), _rs_cross_freq)
+            f_hi = fc2.number_input(
+                "최대 (Hz)", value=f_hi_default, format="%.4g", key="fit_fit_fhi",
+                max_value=float(_rs_cross_freq),
+                help=f"인덕턴스 없음 모드: Z\'\' 교차점({_rs_cross_freq:.1f} Hz) 이하로 제한"
+            )
+            st.caption(f"⚠️ 최대 주파수 상한: {_rs_cross_freq:.1f} Hz (Z\'\'=0 교차점)")
+        else:
+            f_hi = fc2.number_input("최대 (Hz)", value=float(df["Freq"].max()), format="%.4g", key="fit_fit_fhi")
+
         df_fit = df[(df["Freq"] >= f_lo) & (df["Freq"] <= f_hi)].reset_index(drop=True)
         st.caption(f"사용 포인트: **{len(df_fit)}개**")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -558,12 +629,13 @@ def eis_fitting_tab():
         st.markdown('<p class="group-title">인덕턴스 &amp; 직렬 저항</p>', unsafe_allow_html=True)
 
         # L
-        st.markdown('<p class="param-label">L [H] — 인덕턴스</p>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
-        v0_L  = c1.number_input("v", value=_L_default,        format="%.2e", key="p0_L",  label_visibility="collapsed")
-        vlo_L = c2.number_input("l", value=_L_default*0.1,    format="%.2e", key="lo_L", label_visibility="collapsed")
-        vhi_L = c3.number_input("h", value=_L_default*10.0,   format="%.2e", key="hi_L", label_visibility="collapsed")
-        p0.append(v0_L); lo_b.append(vlo_L); hi_b.append(vhi_L)
+        if not no_inductance:
+            st.markdown('<p class="param-label">L [H] — 인덕턴스</p>', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns(3)
+            v0_L  = c1.number_input("v", value=_L_default,        format="%.2e", key="p0_L",  label_visibility="collapsed")
+            vlo_L = c2.number_input("l", value=_L_default*0.1,    format="%.2e", key="lo_L", label_visibility="collapsed")
+            vhi_L = c3.number_input("h", value=_L_default*10.0,   format="%.2e", key="hi_L", label_visibility="collapsed")
+            p0.append(v0_L); lo_b.append(vlo_L); hi_b.append(vhi_L)
 
         # Rs — 파일명 기반 key로 session_state 캐시 우회
         _fname_key = uploaded_fit.name.replace(".", "_").replace(" ", "_")
@@ -620,7 +692,7 @@ def eis_fitting_tab():
             freq_arr = df_fit["Freq"].values
             zr_arr   = df_fit["Zr"].values
             zi_arr   = df_fit["Zi"].values
-            n_params = 2 + num_rc * 3
+            n_params = (1 if no_inductance else 2) + num_rc * 3
 
             if len(freq_arr) < n_params:
                 st.error(f"데이터 포인트({len(freq_arr)})가 파라미터 수({n_params})보다 적습니다.")
@@ -660,13 +732,17 @@ def eis_fitting_tab():
                 with st.spinner(f"{sel_algo_label} 최적화 중..."):
                     try:
                         popt = run_fitting(sel_algo_key, p0, lo_b, hi_b,
-                                           freq_arr, zr_arr, zi_arr, num_rc)
+                                           freq_arr, zr_arr, zi_arr, num_rc,
+                                           no_L=no_inductance)
 
-                        Z_fit_full = circuit_impedance(df["Freq"].values, popt, num_rc)
-                        chi2     = chi2_fn(popt, freq_arr, zr_arr, zi_arr, num_rc)
+                        Z_fit_full = circuit_impedance_flex(df["Freq"].values, popt, num_rc, no_L=no_inductance)
+                        chi2     = chi2_fn_flex(popt, freq_arr, zr_arr, zi_arr, num_rc, no_inductance)
                         chi2_red = chi2 / max(1, 2*len(freq_arr) - n_params)
 
-                        res_labels = [("L","인덕턴스","H"), ("Rs","직렬 저항","Ω")]
+                        if no_inductance:
+                            res_labels = [("Rs","직렬 저항","Ω")]
+                        else:
+                            res_labels = [("L","인덕턴스","H"), ("Rs","직렬 저항","Ω")]
                         for i in range(1, num_rc+1):
                             res_labels += [
                                 (f"R{i}", f"저항 {i}",    "Ω"),
@@ -680,6 +756,7 @@ def eis_fitting_tab():
                             "fit_res_labels": res_labels,
                             "fit_fit_algo": sel_algo_label,
                             "fit_fit_filename": uploaded_fit.name,
+                            "fit_no_inductance_saved": no_inductance,
                         })
                         status_placeholder.empty()
                         st.rerun()
