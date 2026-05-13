@@ -589,8 +589,8 @@ def eis_fitting_tab():
 
         if rs_fixed:
             v0_Rs  = rs_fixed_val
-            vlo_Rs = rs_fixed_val * 0.9999
-            vhi_Rs = rs_fixed_val * 1.0001
+            vlo_Rs = max(1e-6, rs_fixed_val - 1e-6)
+            vhi_Rs = rs_fixed_val + 1e-4   # 하한보다 확실히 크게
             st.caption(f"🔒 Rs = {rs_fixed_val:.4f} Ω 고정")
         p0.append(v0_Rs); lo_b.append(vlo_Rs); hi_b.append(vhi_Rs)
 
@@ -650,6 +650,9 @@ def eis_fitting_tab():
                             p0[2 + i*3] = r_total * ws[i] / s
 
                 # 모든 초기값을 경계 내로 클리핑 (bounds 위반 방지)
+                # lo < hi 보장
+                lo_b = [lo if lo < hi else hi * 0.999 for lo, hi in zip(lo_b, hi_b)]
+                hi_b = [hi if lo < hi else lo * 1.001 + 1e-10 for lo, hi in zip(lo_b, hi_b)]
                 p0 = [max(lo, min(hi, v)) for v, lo, hi in zip(p0, lo_b, hi_b)]
 
                 # LM은 경계 조건 불가 → 클리핑만 (이미 위에서 처리됨)
