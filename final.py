@@ -1189,7 +1189,7 @@ with tab_longterm:
                         parsed_ind[filename] = pd.DataFrame({
                             time_col_ind: df["time_s"] / time_divisor_ind,
                             current_col:  (df["current_a"] / active_area_ind).round(2),
-                            voltage_col:  df["voltage_v"].round(2),
+                            voltage_col:  df["voltage_v"],
                         })
 
                 if not parsed_ind:
@@ -1263,7 +1263,7 @@ with tab_longterm:
 
                             st.divider()
                             st.subheader("📋 데이터 테이블")
-                            fmt = {time_col_ind: "{:.2f}", current_col: "{:.2f}", voltage_col: "{:.2f}"}
+                            fmt = {time_col_ind: "{:.2f}", current_col: "{:.2f}", voltage_col: "{:.6f}"}
                             max_rows = st.number_input("표시할 행 수", min_value=10, max_value=min(10000, len(display_df)),
                                                        value=min(500, len(display_df)), step=10, key=f"rows_{filename}")
                             st.dataframe(display_df.head(int(max_rows)).style.format(fmt), use_container_width=True, height=400)
@@ -1274,7 +1274,7 @@ with tab_longterm:
                             output.write(f"Current density (A cm-2),{avg_current_density},,\n")
                             output.write(f"{filename_stem} Time ({time_label_ind}),{filename_stem} Current Density (A/cm²),{filename_stem} Voltage (V)\n")
                             for _, row in display_df.iterrows():
-                                output.write(f"{row[time_col_ind]:.6f},{row[current_col]:.2f},{row[voltage_col]:.2f}\n")
+                                output.write(f"{row[time_col_ind]:.6f},{row[current_col]:.2f},{row[voltage_col]}\n")
 
                             st.download_button(
                                 label="⬇️ CSV 다운로드",
@@ -1327,7 +1327,7 @@ with tab_longterm:
                         parsed_ov[filename] = pd.DataFrame({
                             time_col_ov: df["time_s"] / time_divisor_ov,
                             current_col: (df["current_a"] / active_area_ov).round(2),
-                            voltage_col: df["voltage_v"].round(2),
+                            voltage_col: df["voltage_v"],
                         })
 
                 if not parsed_ov:
@@ -1444,7 +1444,7 @@ with tab_longterm:
                         for df in parsed_ov.values():
                             if i < len(df):
                                 r = df.iloc[i]
-                                row += [f"{r[time_col_ov]:.6f}", f"{r[current_col]:.2f}", f"{r[voltage_col]:.2f}", ""]
+                                row += [f"{r[time_col_ov]:.6f}", f"{r[current_col]:.2f}", f"{r[voltage_col]}", ""]
                             else:
                                 row += ["", "", "", ""]
                         output.write(",".join(row).rstrip(",") + "\n")
@@ -1515,7 +1515,7 @@ with tab_longterm:
                     part = pd.DataFrame({
                         time_col_ct: df["time_s"] / time_divisor_ct + time_offset,
                         current_col: (df["current_a"] / active_area_ct).round(2),
-                        voltage_col: df["voltage_v"].round(2),
+                        voltage_col: df["voltage_v"],
                     })
                     time_offset = float(part[time_col_ct].max())
                     part["_source"] = name.replace(".idf", "")
@@ -1594,7 +1594,7 @@ with tab_longterm:
 
                     st.divider()
                     st.subheader("📋 데이터 테이블")
-                    fmt = {time_col_ct: "{:.2f}", current_col: "{:.2f}", voltage_col: "{:.2f}"}
+                    fmt = {time_col_ct: "{:.2f}", current_col: "{:.2f}", voltage_col: "{:.6f}"}
                     max_rows = st.number_input("표시할 행 수", min_value=10, max_value=min(10000, len(combined_df)),
                                                value=min(500, len(combined_df)), step=10, key="ct_rows")
                     st.dataframe(combined_df[[time_col_ct, current_col, voltage_col]].head(int(max_rows)).style.format(fmt),
@@ -1606,7 +1606,7 @@ with tab_longterm:
                     output.write(f"Current density (A cm-2),{avg_current_density},,\n")
                     output.write(f"Time ({time_label_ct}),Current Density (A/cm²),Voltage (V)\n")
                     for _, row in combined_df.iterrows():
-                        output.write(f"{row[time_col_ct]:.6f},{row[current_col]:.2f},{row[voltage_col]:.2f}\n")
+                        output.write(f"{row[time_col_ct]:.6f},{row[current_col]:.2f},{row[voltage_col]}\n")
 
                     st.download_button(
                         label="⬇️ 이어붙이기 CSV 다운로드",
