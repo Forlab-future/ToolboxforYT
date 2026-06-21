@@ -1122,7 +1122,7 @@ def render_settings(key_prefix: str):
             st.caption("📉 다운샘플링 배율")
             downsample = st.number_input(
                 "N배 다운샘플링",
-                min_value=1, max_value=1000, value=60, step=1,
+                min_value=1, max_value=500, value=60, step=1,
                 key=f"{key_prefix}_downsample",
                 help="1=전체, 60=60배 축약"
             )
@@ -1489,12 +1489,16 @@ with tab_longterm:
                     st.session_state["time_label_ct"]    = time_label
                     st.session_state["time_divisor_ct"]  = time_divisor
                     st.session_state["active_area_ct"]   = active_area
+                    st.session_state["downsample_ct"]    = downsample
+                    st.session_state["remove5min_ct"]    = remove_5min
 
                 concat_slots    = st.session_state["concat_slots"]
                 concat_names    = st.session_state["concat_names"]
                 time_label_ct   = st.session_state["time_label_ct"]
                 time_divisor_ct = st.session_state["time_divisor_ct"]
                 active_area_ct  = st.session_state["active_area_ct"]
+                downsample_ct   = st.session_state.get("downsample_ct", 60)
+                remove5min_ct   = st.session_state.get("remove5min_ct", False)
                 time_col_ct     = f"Time ({time_label_ct})"
 
                 combined_parts = []
